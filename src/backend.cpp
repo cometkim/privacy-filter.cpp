@@ -2,6 +2,7 @@
 
 #include <ggml-cpu.h>
 
+#include <cstdlib>
 #include <cstring>
 
 namespace pf {
@@ -9,16 +10,20 @@ namespace pf {
 bool engine_backend::init(const std::string & device_req, int n_threads) {
     release();
 
-    const bool want_vulkan = device_req == "vulkan";
+    // "vulkan" = first GPU, "vulkan:N" = Nth GPU (multi-GPU hosts often
+    // enumerate an integrated GPU first)
+    const bool want_vulkan = device_req.rfind("vulkan", 0) == 0;
     if (want_vulkan) {
+        const int want_idx = device_req.size() > 7 ? std::atoi(device_req.c_str() + 7) : 0;
+        int gpu_idx = 0;
         for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
-                be = ggml_backend_dev_init(dev, nullptr);
-                if (be) {
-                    device = ggml_backend_dev_name(dev);
-                    break;
-                }
+            if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) continue;
+            if (gpu_idx++ != want_idx) continue;
+            be = ggml_backend_dev_init(dev, nullptr);
+            if (be) {
+                device = ggml_backend_dev_name(dev);
+                break;
             }
         }
         if (!be) {

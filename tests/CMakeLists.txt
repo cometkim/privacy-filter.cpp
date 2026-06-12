@@ -10,7 +10,8 @@ function(pf_add_test name)
 endfunction()
 
 pf_add_test(test_loader)
-set_tests_properties(test_loader PROPERTIES LABELS "model")
+set_tests_properties(test_loader PROPERTIES
+    ENVIRONMENT "PF_FUZZ_FIXTURES=${CMAKE_SOURCE_DIR}/tests/fixtures/fuzz")
 
 pf_add_test(test_graph_blocks)
 pf_add_test(test_ner)

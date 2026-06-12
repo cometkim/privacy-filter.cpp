@@ -42,5 +42,17 @@ target_link_libraries(pf-cli PRIVATE pf)
 target_include_directories(pf-cli PRIVATE src)
 target_compile_options(pf-cli PRIVATE -Wall -Wextra)
 
+if (PF_FUZZ)
+    foreach(target fuzz_tokenizer fuzz_gguf)
+        add_executable(${target} fuzz/${target}.cpp)
+        target_link_libraries(${target} PRIVATE pf)
+        target_include_directories(${target} PRIVATE src)
+    endforeach()
+endif()
+
+add_executable(pf-bench bench/pf-bench.cpp)
+target_link_libraries(pf-bench PRIVATE pf)
+target_include_directories(pf-bench PRIVATE src)
+
 enable_testing()
 add_subdirectory(tests)

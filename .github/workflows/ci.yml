@@ -3,10 +3,12 @@ name: ci
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "20 3 * * *"   # tier 2 nightly
+  workflow_dispatch:
 
 jobs:
-  # Tier 1: no model assets. Tier 2 (nightly: parity vs HF, Vulkan, fuzz
-  # smoke, bench) lands with the test suites that need it.
+  # Tier 1: no model assets — build matrix, fast tests, generated-file checks.
   fast:
     strategy:
       matrix:
@@ -26,3 +28,52 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }} -j
       - name: test (model-independent)
         run: ctest --preset ${{ matrix.preset }} -LE model
+      - name: unicode table regen check
+        run: |
+          python3 scripts/gen_unicode.py > /tmp/unicode_data.inc
+          diff -u src/unicode_data.inc /tmp/unicode_data.inc
+
+  # Tier 2 (nightly / dispatch): HF reference fixtures + parity + fuzz smoke.
+  # Needs the model checkpoint; cached between runs.
+  parity:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: cache model + fixtures
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/models/privacy-filter-multilingual
+            tests/fixtures/hf
+          key: pf-model-fixtures-v1
+      - name: python env
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+          .venv/bin/pip install -q -r scripts/requirements.txt
+      - name: fetch model + convert + dump fixtures
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          .venv/bin/pip install -q "huggingface_hub[cli]"
+          .venv/bin/hf download OpenMed/privacy-filter-multilingual \
+            --local-dir ~/models/privacy-filter-multilingual
+          # GGUF conversion lives in the llama.cpp fork (same files serve both
+          # engines); the cache is seeded with pf-rope2-f16.gguf + pf-f32.gguf
+          # once, manually. Without them the model-label tests skip (exit 77).
+          .venv/bin/python scripts/hf_dump.py \
+            --model ~/models/privacy-filter-multilingual --out tests/fixtures/hf
+      - name: build
+        run: cmake --preset release -DGGML_NATIVE=OFF && cmake --build --preset release -j
+      - name: parity suite
+        run: PF_GGUF_DIR=~/models/privacy-filter-multilingual ctest --preset release -L model
+      - name: fuzz smoke (5 min/target)
+        run: |
+          cmake --preset fuzz && cmake --build --preset fuzz -j --target fuzz_tokenizer fuzz_gguf
+          PF_GGUF=~/models/privacy-filter-multilingual/pf-rope2-f16.gguf \
+            ./build/fuzz/fuzz_tokenizer -max_total_time=300 -max_len=4096
+          ./build/fuzz/fuzz_gguf -max_total_time=300 -max_len=8192

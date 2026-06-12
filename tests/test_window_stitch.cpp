@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -52,7 +53,8 @@ int main() {
 
     const char * f16_name = std::getenv("PF_GGUF_NAME");
     pf::model m;
-    if (!m.load(std::string(gguf_dir) + "/" + (f16_name ? f16_name : "pf-rope2-f16.gguf"), "cpu", 0)) {
+    if (!m.load(std::string(gguf_dir) + "/" + (f16_name ? f16_name : "pf-rope2-f16.gguf"),
+               std::getenv("PF_DEVICE") ? std::getenv("PF_DEVICE") : "cpu", 0)) {
         std::fprintf(stderr, "load: %s\n", m.error.c_str());
         return 1;
     }
@@ -90,8 +92,12 @@ int main() {
     }
     std::printf("argmax-label max |dlogprob| = %.2e, argmax diffs = %d/%d\n",
                 max_d_top, argmax_diff, n);
-    CHECK_MSG(argmax_diff == 0, "argmax differs across stitching");
-    CHECK_MSG(max_d_top < 0.05, "argmax-label log-prob delta %.2e >= 0.05", max_d_top);
+    const char * dev = std::getenv("PF_DEVICE");
+    const bool gpu = dev && std::strcmp(dev, "cpu") != 0;
+    // GPU fp16-class matmul noise: allow rare flips on near-tie tokens and a
+    // wider top-label envelope; spans below remain the hard contract.
+    CHECK_MSG(argmax_diff <= (gpu ? 3 : 0), "argmax differs across stitching: %d", argmax_diff);
+    CHECK_MSG(max_d_top < (gpu ? 0.25 : 0.05), "argmax-label log-prob delta %.2e", max_d_top);
 
     // span-level equivalence through the full decode
     const pf::ner::label_table lt = pf::ner::build_label_table(m.file.labels);
@@ -105,7 +111,7 @@ int main() {
                   "span %zu differs: [%d,%d] cat %d vs [%d,%d] cat %d", i,
                   spans_a[i].tok_begin, spans_a[i].tok_end, spans_a[i].cat,
                   spans_b[i].tok_begin, spans_b[i].tok_end, spans_b[i].cat);
-        CHECK_MSG(std::fabs(spans_a[i].score - spans_b[i].score) < 0.02,
+        CHECK_MSG(std::fabs(spans_a[i].score - spans_b[i].score) < (gpu ? 0.06 : 0.02),
                   "span %zu score %.4f vs %.4f", i, spans_a[i].score, spans_b[i].score);
     }
     std::printf("spans: %zu (identical)\n", spans_a.size());
