@@ -72,3 +72,15 @@ structurally pre-validates files to cover them; artifacts are pinned under
 ```sh
 build/release/pf-bench model.gguf [cpu|vulkan] [iters]
 ```
+
+Ryzen 9 7900 (12 threads) / RTX 5070 Ti, f16 GGUF, forward tok/s by length
+(GPU first rows pay one-time pipeline compilation):
+
+| tokens | cpu | vulkan |
+|-------:|----:|-------:|
+|    189 | 161 |   (warm-up) |
+|  2 898 | 129 |  5 347 |
+| 11 403 |  68 | 12 770 |
+| 45 234 |  60 | 13 960 |
+
+Weights stay in one zero-copy buffer: ~2.8 GiB RSS over baseline (f16).

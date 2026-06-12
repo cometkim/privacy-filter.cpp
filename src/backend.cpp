@@ -2,8 +2,10 @@
 
 #include <ggml-cpu.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 namespace pf {
 
@@ -37,9 +39,12 @@ bool engine_backend::init(const std::string & device_req, int n_threads) {
             return false;
         }
         device = "cpu";
-        if (n_threads > 0) {
-            ggml_backend_cpu_set_n_threads(be, n_threads);
+        if (n_threads <= 0) {
+            // ggml's default is 4 threads; matmul-heavy work wants the
+            // physical cores (SMT siblings only add contention here)
+            n_threads = std::max(1u, std::thread::hardware_concurrency() / 2);
         }
+        ggml_backend_cpu_set_n_threads(be, n_threads);
     } else {
         error = "unknown device '" + device_req + "' (want cpu|vulkan)";
         return false;
