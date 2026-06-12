@@ -1,0 +1,8 @@
+build*/
+.venv/
+.cache/
+compile_commands.json
+*.gguf
+corpus_*/
+crash-*
+perf.data*

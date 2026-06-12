@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Tier 1: no model assets. Tier 2 (nightly: parity vs HF, Vulkan, fuzz
+  # smoke, bench) lands with the test suites that need it.
+  fast:
+    strategy:
+      matrix:
+        include:
+          - { name: gcc-release, preset: release, cc: gcc, cxx: g++ }
+          - { name: clang-debug-san, preset: debug, cc: clang, cxx: clang++ }
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: configure
+        run: cmake --preset ${{ matrix.preset }} -DGGML_NATIVE=OFF
+        env: { CC: '${{ matrix.cc }}', CXX: '${{ matrix.cxx }}' }
+      - name: build
+        run: cmake --build --preset ${{ matrix.preset }} -j
+      - name: test (model-independent)
+        run: ctest --preset ${{ matrix.preset }} -LE model
