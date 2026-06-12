@@ -6,3 +6,4 @@ compile_commands.json
 corpus_*/
 crash-*
 perf.data*
+tests/fixtures/hf/
