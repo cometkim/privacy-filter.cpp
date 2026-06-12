@@ -1,17 +1,15 @@
 #include "pf.h"
 
-#include "gguf_loader.h"
+#include "model.h"
 
 #include <cstdlib>
 #include <cstring>
 #include <string>
 
 struct pf_ctx {
-    pf::model_file file;
-    std::string    device;
-    int            n_threads = 0;
-    int32_t        max_forward_tokens = 4096;
-    std::string    error;
+    pf::model   m;
+    int32_t     max_forward_tokens = 4096;
+    std::string error;
 };
 
 int pf_abi_version(void) { return PF_ABI_VERSION; }
@@ -19,12 +17,8 @@ int pf_abi_version(void) { return PF_ABI_VERSION; }
 pf_ctx * pf_load(const char * gguf_path, const char * device, int n_threads) {
     if (!gguf_path) return nullptr;
     auto * ctx = new pf_ctx();
-    ctx->device    = device ? device : "cpu";
-    ctx->n_threads = n_threads;
-    // P0: metadata only. Weight realization (CPU zero-copy / Vulkan upload)
-    // lands with the forward pass.
-    if (!ctx->file.open(gguf_path, /*with_data =*/ false)) {
-        ctx->error = ctx->file.error;
+    if (!ctx->m.load(gguf_path, device ? device : "cpu", n_threads)) {
+        ctx->error = ctx->m.error;
     }
     return ctx;
 }
@@ -60,9 +54,25 @@ int pf_tokenize(pf_ctx * ctx, const char *, size_t, int32_t ** ids, int32_t ** o
     return not_implemented(ctx);
 }
 
-int pf_logits(pf_ctx * ctx, const int32_t *, size_t, float ** logits) {
+int pf_logits(pf_ctx * ctx, const int32_t * ids, size_t n, float ** logits) {
     if (logits) *logits = nullptr;
-    return not_implemented(ctx);
+    if (!ctx || !ids || n == 0) return -1;
+    if (!ctx->error.empty()) return -1;
+
+    // P3 adds halo-window stitching for n > max_forward_tokens.
+    if ((int64_t) n > ctx->max_forward_tokens) {
+        ctx->error = "input exceeds forward window (windowing lands in P3)";
+        return -1;
+    }
+    std::vector<float> out;
+    if (!ctx->m.forward(ids, (int64_t) n, out)) {
+        ctx->error = ctx->m.error;
+        return -1;
+    }
+    *logits = (float *) malloc(out.size() * sizeof(float));
+    if (!*logits) return -1;
+    std::memcpy(*logits, out.data(), out.size() * sizeof(float));
+    return 0;
 }
 
 void pf_buf_free(void * buf) { free(buf); }

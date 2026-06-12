@@ -11,3 +11,9 @@ endfunction()
 
 pf_add_test(test_loader)
 set_tests_properties(test_loader PROPERTIES LABELS "model")
+
+pf_add_test(test_graph_blocks)
+
+pf_add_test(test_parity)
+set_tests_properties(test_parity PROPERTIES LABELS "model"
+    ENVIRONMENT "PF_FIXTURES=${CMAKE_SOURCE_DIR}/tests/fixtures/hf")

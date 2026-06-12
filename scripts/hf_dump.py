@@ -21,6 +21,14 @@ Layout conventions:
     sum by top_k afterwards (the two cancel). moe_weights is stored *top_k so
     it matches the engine's plain-softmax weights; moe_out is the MLP module
     output (post *top_k), directly comparable to the engine's tap.
+  - Taps are dumped with the rotary cos/sin computed in float64 (cast to f32).
+    HF's stock f32 rotary (inv_freq @ pos in f32) carries position-scaled
+    phase noise that dominates every downstream tap at long positions
+    (measured: 0.296 max-abs final-logit delta f64-vs-f32 rotary at 3k
+    tokens, while the ggml engine sits 0.004 from the f64 reference). The
+    per-layer reference is therefore the exact-rotation variant; the stock
+    f32-rotary logits are additionally saved as logits_stock.f32 for the
+    end-to-end gate against the unmodified reference.
 """
 from __future__ import annotations
 
@@ -160,11 +168,31 @@ def dump_case(model, tok, text: str, out: Path, n_layer: int, top_k: int):
 
     on(model.model.norm, lambda m, inp, o: save("result_norm", o[0]))
 
+    import transformers.models.openai_privacy_filter.modeling_openai_privacy_filter as M
+
+    orig_rope = M.OpenAIPrivacyFilterRotaryEmbedding.forward
+
+    @torch.no_grad()
+    def f64_rope(self, x, position_ids):
+        inv = self.inv_freq.to(torch.float64)
+        pos = position_ids.to(torch.float64)
+        freqs = torch.outer(pos[0], inv)
+        cos = (freqs.cos() * self.attention_scaling).to(x.dtype).unsqueeze(0)
+        sin = (freqs.sin() * self.attention_scaling).to(x.dtype).unsqueeze(0)
+        return cos, sin
+
+    M.OpenAIPrivacyFilterRotaryEmbedding.forward = f64_rope
     with torch.no_grad():
         outp = model(input_ids=torch.tensor([ids]))
+    M.OpenAIPrivacyFilterRotaryEmbedding.forward = orig_rope
     taps["logits"] = outp.logits[0].to(torch.float32).cpu().numpy()
     for h in hooks:
         h.remove()
+
+    # stock f32-rotary logits for the e2e gate (no taps; hooks are off)
+    with torch.no_grad():
+        stock = model(input_ids=torch.tensor([ids])).logits[0]
+    taps["logits_stock"] = stock.to(torch.float32).cpu().numpy()
 
     meta = {"n_tok": len(ids), "taps": {}}
     for name, a in taps.items():
