@@ -7,6 +7,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(PF_VULKAN "Enable the ggml Vulkan backend" OFF)
 option(PF_FUZZ   "Build libFuzzer targets (clang only)" OFF)
+# OFF lets a consumer (e.g. the LocalAI gRPC backend) add_subdirectory() this
+# project and link the pf lib without pulling in the CLI/bench/test tree.
+option(PF_BUILD_TOOLS "Build pf-cli and pf-bench" ON)
+option(PF_BUILD_TESTS "Build the test suite"      ON)
 set(PF_FUZZ_SANITIZERS "fuzzer,address,undefined" CACHE STRING
     "Sanitizers for fuzz builds")
 
@@ -37,10 +41,16 @@ target_include_directories(pf PUBLIC include)
 target_link_libraries(pf PUBLIC ggml)
 target_compile_options(pf PRIVATE -Wall -Wextra)
 
-add_executable(pf-cli tools/pf-cli.cpp)
-target_link_libraries(pf-cli PRIVATE pf)
-target_include_directories(pf-cli PRIVATE src)
-target_compile_options(pf-cli PRIVATE -Wall -Wextra)
+if (PF_BUILD_TOOLS)
+    add_executable(pf-cli tools/pf-cli.cpp)
+    target_link_libraries(pf-cli PRIVATE pf)
+    target_include_directories(pf-cli PRIVATE src)
+    target_compile_options(pf-cli PRIVATE -Wall -Wextra)
+
+    add_executable(pf-bench bench/pf-bench.cpp)
+    target_link_libraries(pf-bench PRIVATE pf)
+    target_include_directories(pf-bench PRIVATE src)
+endif()
 
 if (PF_FUZZ)
     foreach(target fuzz_tokenizer fuzz_gguf)
@@ -50,9 +60,7 @@ if (PF_FUZZ)
     endforeach()
 endif()
 
-add_executable(pf-bench bench/pf-bench.cpp)
-target_link_libraries(pf-bench PRIVATE pf)
-target_include_directories(pf-bench PRIVATE src)
-
-enable_testing()
-add_subdirectory(tests)
+if (PF_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
