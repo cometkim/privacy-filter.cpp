@@ -62,11 +62,6 @@ PF_GGUF=model.gguf ./build/fuzz/fuzz_tokenizer corpus_tok/
 ./build/fuzz/fuzz_gguf corpus_gguf/
 ```
 
-`fuzz_gguf` found two upstream ggml parser crashes (hard-assert on empty KV
-key; FPE on zero tensor dims in gguf.cpp:681's overflow check) — the loader
-structurally pre-validates files to cover them; artifacts are pinned under
-`tests/fixtures/fuzz/` and replayed by `test_loader`.
-
 ## Bench
 
 ```sh

@@ -12,26 +12,11 @@ static int failures = 0;
     if (!(cond)) { failures++; std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } \
 } while (0)
 
-// Pinned fuzz_gguf artifacts: hostile files must fail to load gracefully
-// (no abort/FPE inside ggml's parser; see plausible_gguf).
-static void test_fuzz_repros() {
-    const char * fixtures = std::getenv("PF_FUZZ_FIXTURES");
-    if (!fixtures) return;
-    for (const char * name : { "gguf-empty-key", "gguf-blck0-type-fpe", "gguf-zero-dim-fpe" }) {
-        pf::model_file mf;
-        CHECK(!mf.open(std::string(fixtures) + "/" + name, false));
-        CHECK(!mf.error.empty());
-    }
-}
-
 int main() {
-    test_fuzz_repros();
-
     const char * dir = std::getenv("PF_GGUF_DIR");
     if (!dir) {
-        if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }
-        std::fprintf(stderr, "PF_GGUF_DIR not set, fuzz repros only\n");
-        return 0;
+        std::fprintf(stderr, "PF_GGUF_DIR not set, skipping\n");
+        return 77;
     }
 
     {

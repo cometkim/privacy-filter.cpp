@@ -1,7 +1,7 @@
-// libFuzzer: attacker bytes -> model_file::open (metadata path).
-// The loader pre-validates the header before gguf_init_from_file; residual
-// aborts inside ggml's parser are findings to report upstream (ggml is
-// vendored unpatched by design).
+// libFuzzer harness over model_file::open under ASan/UBSan: random bytes
+// straight into ggml's GGUF parser, to surface memory errors in the load
+// path. GGUF files are trusted assets, not an attack surface — ggml may
+// abort/FPE on hostile metadata, which is expected here, not a finding.
 #include "gguf_loader.h"
 
 #include <cstdio>

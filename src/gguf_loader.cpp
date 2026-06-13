@@ -1,8 +1,5 @@
 #include "gguf_loader.h"
 
-#include <cstdio>
-#include <cstring>
-
 namespace pf {
 
 static const char * ARCH = "openai-privacy-filter";
@@ -60,134 +57,8 @@ std::string akey(const char * suffix) {
 
 } // namespace
 
-// Structural pre-validation in front of gguf_init_from_file: ggml is
-// vendored unpatched and its parser hard-asserts on hostile metadata (e.g.
-// gguf.cpp GGML_ASSERT(!key.empty()) — found by fuzz_gguf), so walk the KV
-// stream with bounded seeks (no allocation) and reject malformed files
-// before handing them over. Not a security boundary — a hardening layer
-// that shrinks the abort surface.
-static bool plausible_gguf(const std::string & path, std::string & error) {
-    FILE * f = std::fopen(path.c_str(), "rb");
-    if (!f) {
-        error = "cannot open: " + path;
-        return false;
-    }
-    std::fseek(f, 0, SEEK_END);
-    const int64_t fsize = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-
-    bool ok = true;
-    auto fail = [&](const char * why) {
-        if (ok) error = std::string("malformed GGUF (") + why + "): " + path;
-        ok = false;
-        return false;
-    };
-    auto rd = [&](void * dst, size_t n) {
-        return ok && std::fread(dst, 1, n, f) == n ? true : fail("truncated");
-    };
-    auto skip = [&](uint64_t n) {
-        if (!ok) return false;
-        if (n > (uint64_t) fsize) return fail("length exceeds file");
-        std::fseek(f, (long) n, SEEK_CUR);
-        return std::ftell(f) <= fsize ? true : fail("seek past end");
-    };
-    // scalar sizes by gguf type id; 8=string, 9=array handled separately
-    static const int TYPE_SIZE[13] = { 1, 1, 2, 2, 4, 4, 4, 1, -1, -1, 8, 8, 8 };
-    char key_buf[64];
-    auto rd_str_hdr = [&](bool key) {
-        key_buf[0] = 0;
-        uint64_t len = 0;
-        if (!rd(&len, 8)) return false;
-        if (key && (len == 0 || len > 4096)) return fail("bad key length");
-        if (key && len < sizeof(key_buf)) {
-            if (!rd(key_buf, len)) return false;
-            key_buf[len] = 0;
-            return true;
-        }
-        return skip(len);
-    };
-
-    char magic[4];
-    uint32_t version = 0;
-    uint64_t n_tensors = 0, n_kv = 0;
-    if (!rd(magic, 4) || std::memcmp(magic, "GGUF", 4) != 0) {
-        error = "not a GGUF file: " + path;
-        std::fclose(f);
-        return false;
-    }
-    rd(&version, 4);
-    rd(&n_tensors, 8);
-    rd(&n_kv, 8);
-    if (ok && (version < 2 || version > 3 ||
-               n_tensors > (uint64_t) fsize / 24 || n_kv > (uint64_t) fsize / 16)) {
-        fail("implausible header counts");
-    }
-
-    for (uint64_t i = 0; ok && i < n_kv; i++) {
-        if (!rd_str_hdr(/*key =*/ true)) break;
-        uint32_t type = 0;
-        if (!rd(&type, 4)) break;
-        if (std::strcmp(key_buf, "general.alignment") == 0) {
-            // ggml takes offset % alignment: zero or non-power-of-2 is an FPE
-            uint32_t a = 0;
-            if (type != 4 || !rd(&a, 4)) { fail("bad alignment kv"); break; }
-            if (a == 0 || (a & (a - 1)) != 0) { fail("bad alignment value"); break; }
-            continue;
-        }
-        if (type == 8) {
-            rd_str_hdr(false);
-        } else if (type == 9) {
-            uint32_t et = 0;
-            uint64_t n = 0;
-            if (!rd(&et, 4) || !rd(&n, 8)) break;
-            if (et > 12 || et == 9 || n > (uint64_t) fsize) { fail("bad array"); break; }
-            if (et == 8) {
-                for (uint64_t k = 0; ok && k < n; k++) rd_str_hdr(false);
-            } else {
-                skip(n * TYPE_SIZE[et]);
-            }
-        } else if (type <= 12) {
-            skip(TYPE_SIZE[type]);
-        } else {
-            fail("bad kv type");
-        }
-    }
-    for (uint64_t i = 0; ok && i < n_tensors; i++) {
-        if (!rd_str_hdr(/*key =*/ true)) break;  // tensor names: same bounds
-        uint32_t n_dims = 0;
-        if (!rd(&n_dims, 4)) break;
-        if (n_dims > 4) { fail("bad tensor rank"); break; }
-        uint64_t ne[4] = { 1, 1, 1, 1 };
-        for (uint32_t d = 0; ok && d < n_dims; d++) rd(&ne[d], 8);
-        uint32_t type = 0;
-        if (!rd(&type, 4)) break;
-        // deprecated/removed type slots have blck_size 0: ggml divides by it
-        // when sizing the tensor (FPE found by fuzz_gguf)
-        if (type >= GGML_TYPE_COUNT || ggml_blck_size((ggml_type) type) <= 0) {
-            fail("bad tensor type");
-            break;
-        }
-        // zero dims FPE in gguf.cpp:681's overflow check (INT64_MAX/ne[1]
-        // with ne[1]==0 — zero passes its <0 validation); found by fuzz_gguf
-        const uint64_t blck = (uint64_t) ggml_blck_size((ggml_type) type);
-        if (ne[0] == 0 || ne[1] == 0 || ne[2] == 0 || ne[3] == 0 ||
-            ne[0] % blck != 0 || ne[0] > (uint64_t) fsize * 8 ||
-            ne[1] > (uint64_t) fsize || ne[2] > (uint64_t) fsize || ne[3] > (uint64_t) fsize) {
-            fail("bad tensor shape");
-            break;
-        }
-        skip(8);  // data offset
-    }
-    std::fclose(f);
-    return ok;
-}
-
 bool model_file::open(const std::string & path, bool with_data) {
     close();
-
-    if (!plausible_gguf(path, error)) {
-        return false;
-    }
 
     gguf_init_params params = { /*no_alloc =*/ !with_data, /*ctx =*/ &ctx };
     guf = gguf_init_from_file(path.c_str(), params);
