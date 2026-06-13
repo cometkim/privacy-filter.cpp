@@ -18,7 +18,8 @@ struct engine_backend {
     std::string     device;   // resolved name
     std::string     error;
 
-    // device_req: "" or "cpu" or "vulkan"
+    // device_req: "" | "cpu" | "gpu" | "cuda" | "vulkan", optionally ":N" to
+    // pick the Nth matching GPU. "gpu" = first GPU of whichever backend is built.
     bool init(const std::string & device_req, int n_threads);
     void release();
     ~engine_backend() { release(); }

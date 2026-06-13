@@ -19,14 +19,19 @@ cmake --preset release && cmake --build --preset release -j
 ```
 
 Presets: `release`, `debug` (ASan+UBSan), `profile`, `fuzz` (clang libFuzzer).
-Vulkan: `-DPF_VULKAN=ON` (needs Vulkan headers/loader + glslc).
+GPU backends layer onto any preset:
+- Vulkan: `-DPF_VULKAN=ON` (needs Vulkan headers/loader + glslc).
+- CUDA: `-DPF_CUDA=ON` (needs the CUDA toolkit). ggml picks sensible
+  `CMAKE_CUDA_ARCHITECTURES`; for a bleeding-edge GPU whose features ptxas
+  rejects under the generic arch (e.g. Blackwell sm_120 → `sm_120a`), pass
+  `-DCMAKE_CUDA_ARCHITECTURES=120a`.
 
 ## Run
 
 ```sh
 build/release/pf-cli --info model.gguf
 echo "Contact John Doe at jdoe@example.com" | \
-  build/release/pf-cli --classify model.gguf 0.5            # [cpu|vulkan]
+  build/release/pf-cli --classify model.gguf 0.5       # [cpu|cuda|vulkan]
 ```
 
 C API in `include/pf.h`: `pf_load` / `pf_classify` (text -> entities with

@@ -29,7 +29,9 @@ typedef struct {
 
 int pf_abi_version(void);
 
-// device: NULL or "cpu" or "vulkan". n_threads <= 0 picks a default.
+// device: NULL or "cpu", "gpu", "cuda", "vulkan" (optionally ":N" to pick the
+// Nth matching GPU). "gpu" = first GPU of whichever backend was compiled in.
+// n_threads <= 0 picks a default (CPU only).
 pf_ctx *     pf_load(const char * gguf_path, const char * device, int n_threads);
 void         pf_free(pf_ctx * ctx);
 const char * pf_last_error(const pf_ctx * ctx);

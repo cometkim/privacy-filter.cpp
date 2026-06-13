@@ -1,6 +1,6 @@
 // pf-cli — inspect and run the privacy-filter model.
 //   pf-cli --info <model.gguf>
-//   pf-cli --model <model.gguf> --tokens <tokens.i32> [--device cpu|vulkan]
+//   pf-cli --model <model.gguf> --tokens <tokens.i32> [--device cpu|cuda|vulkan]
 //          [--threads N] [--dump-taps DIR] [--logits-out FILE]
 #include "gguf_loader.h"
 #include "pf.h"
@@ -179,7 +179,7 @@ int main(int argc, char ** argv) {
     if (model_path.empty() || tokens_path.empty()) {
         std::fprintf(stderr,
             "usage: pf-cli --info <model.gguf>\n"
-            "       pf-cli --model <model.gguf> --tokens <tokens.i32> [--device cpu|vulkan]\n"
+            "       pf-cli --model <model.gguf> --tokens <tokens.i32> [--device cpu|cuda|vulkan]\n"
             "              [--threads N] [--window N] [--dump-taps DIR] [--logits-out FILE]\n"
             "              [--offsets <offsets.i32> --text <text.txt> [--threshold F]]\n");
         return 2;

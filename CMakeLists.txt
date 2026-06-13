@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(PF_VULKAN "Enable the ggml Vulkan backend" OFF)
+option(PF_CUDA   "Enable the ggml CUDA backend"   OFF)
 option(PF_FUZZ   "Build libFuzzer targets (clang only)" OFF)
 # OFF lets a consumer (e.g. the LocalAI gRPC backend) add_subdirectory() this
 # project and link the pf lib without pulling in the CLI/bench/test tree.
@@ -16,6 +17,9 @@ set(PF_FUZZ_SANITIZERS "fuzzer,address,undefined" CACHE STRING
 
 if (PF_VULKAN)
     set(GGML_VULKAN ON)
+endif()
+if (PF_CUDA)
+    set(GGML_CUDA ON)
 endif()
 set(GGML_BUILD_TESTS    OFF)
 set(GGML_BUILD_EXAMPLES OFF)
