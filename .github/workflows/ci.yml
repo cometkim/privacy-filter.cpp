@@ -21,6 +21,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          # unicodedata is bundled with CPython and its UCD version is fixed per
+          # minor release; the generated table is only reproducible on a matching
+          # version. 3.13 -> UCD 15.1.0, matching src/unicode_data.inc (the runner
+          # default python3 is 3.12 -> UCD 15.0.0, which regenerates differently).
+          python-version: '3.13'
       - name: configure
         run: cmake --preset ${{ matrix.preset }} -DGGML_NATIVE=OFF
         env: { CC: '${{ matrix.cc }}', CXX: '${{ matrix.cxx }}' }

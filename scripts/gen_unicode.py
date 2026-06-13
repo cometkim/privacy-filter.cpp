@@ -17,12 +17,23 @@ The regex classes are composed in the scanner:
   UPPERISH  = LU | LX | M    ([\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}])
   LOWERISH  = LL | LX | M    ([\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}])
 
-Output is committed; regenerate with any Python >= 3.10 (table contents
-depend on the unicodedata version — pin noted in the header comment).
-CI check: regenerating must reproduce the committed file byte-identically.
+Output is committed. The table content depends on the unicodedata version
+bundled with CPython (one UCD version per minor release), so it is NOT
+reproducible across Python versions: regenerate with Python 3.13
+(unicodedata 15.1.0), which is what CI pins. The regen check must reproduce
+the committed file byte-identically.
 """
 import sys
 import unicodedata
+
+# CPython 3.13's bundled UCD; keep in sync with the CI python-version pin and
+# the generated header line. A mismatch silently produces a different table.
+EXPECTED_UNIDATA_VERSION = "15.1.0"
+if unicodedata.unidata_version != EXPECTED_UNIDATA_VERSION:
+    sys.stderr.write(
+        f"warning: unicodedata {unicodedata.unidata_version} != expected "
+        f"{EXPECTED_UNIDATA_VERSION}; the generated table will not match the "
+        f"committed src/unicode_data.inc — regenerate with Python 3.13\n")
 
 MASK = {"LU": 1, "LL": 2, "LX": 4, "M": 8, "N": 16, "WS": 32}
 
