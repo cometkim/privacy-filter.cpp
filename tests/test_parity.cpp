@@ -145,6 +145,19 @@ int main() {
         }
     }
 
+    // The f16 GGUF is the primary gate. PF_GGUF_DIR may be set (the CI cache
+    // restores the directory) while the GGUF itself is absent — conversion
+    // lives in the llama.cpp fork and the cache is seeded separately (see
+    // .github/workflows/ci.yml). Skip cleanly rather than fail in that case.
+    const char * f16_name = std::getenv("PF_GGUF_NAME");
+    const std::string f16 = std::string(gguf_dir) + "/" + (f16_name ? f16_name : "pf-rope2-f16.gguf");
+    if (FILE * f = std::fopen(f16.c_str(), "rb")) {
+        std::fclose(f);
+    } else {
+        std::fprintf(stderr, "%s absent, skipping\n", f16.c_str());
+        return 77;
+    }
+
     // f32 GGUF: tight per-row gates vs the exact-rotation reference
     const std::string f32 = std::string(gguf_dir) + "/pf-f32.gguf";
     if (FILE * f = std::fopen(f32.c_str(), "rb")) {
@@ -156,9 +169,7 @@ int main() {
     }
 
     // f16 GGUF: production-file gate vs the stock reference
-    const char * f16_name = std::getenv("PF_GGUF_NAME");
-    run_model(std::string(gguf_dir) + "/" + (f16_name ? f16_name : "pf-rope2-f16.gguf"),
-              fixtures, "logits_stock.f32", is_gpu() ? 0.998 : 0.999, is_gpu() ? 0.15 : 5e-2);
+    run_model(f16, fixtures, "logits_stock.f32", is_gpu() ? 0.998 : 0.999, is_gpu() ? 0.15 : 5e-2);
 
     if (failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);

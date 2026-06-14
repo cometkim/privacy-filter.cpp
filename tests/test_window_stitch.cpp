@@ -51,10 +51,19 @@ int main() {
     }
     const int n = (int) ids.size();
 
+    // PF_GGUF_DIR may be set (the CI cache restores the directory) while the
+    // GGUF itself is absent — the cache is seeded separately. Skip cleanly
+    // rather than fail when the file is missing (see .github/workflows/ci.yml).
     const char * f16_name = std::getenv("PF_GGUF_NAME");
+    const std::string f16 = std::string(gguf_dir) + "/" + (f16_name ? f16_name : "pf-rope2-f16.gguf");
+    if (FILE * f = std::fopen(f16.c_str(), "rb")) {
+        std::fclose(f);
+    } else {
+        std::fprintf(stderr, "%s absent, skipping\n", f16.c_str());
+        return 77;
+    }
     pf::model m;
-    if (!m.load(std::string(gguf_dir) + "/" + (f16_name ? f16_name : "pf-rope2-f16.gguf"),
-               std::getenv("PF_DEVICE") ? std::getenv("PF_DEVICE") : "cpu", 0)) {
+    if (!m.load(f16, std::getenv("PF_DEVICE") ? std::getenv("PF_DEVICE") : "cpu", 0)) {
         std::fprintf(stderr, "load: %s\n", m.error.c_str());
         return 1;
     }
