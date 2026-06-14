@@ -34,10 +34,47 @@ echo "Contact John Doe at jdoe@example.com" | \
   build/release/pf-cli --classify model.gguf 0.5       # [cpu|cuda|vulkan]
 ```
 
-C API in `include/pf.h`: `pf_load` / `pf_classify` (text -> entities with
-byte offsets) / `pf_tokenize` / `pf_logits`. Inputs longer than the forward
-window run as overlapping halo windows (exact: the halo covers the model's
-full receptive field).
+## C API
+
+Flat C API in [`include/pf.h`](include/pf.h): an opaque `pf_ctx` handle and
+caller-owned flat buffers. No exceptions cross the boundary — pointer-returning
+calls report failure via `pf_last_error`, every free is NULL-safe — so it binds
+cleanly from other languages (purego, ctypes, cgo).
+
+```c
+#include "pf.h"
+#include <string.h>
+#include <stdio.h>
+
+// device: NULL/"cpu" | "gpu" | "cuda" | "vulkan" (optionally ":N").
+// n_threads <= 0 picks a default (CPU only).
+pf_ctx * ctx = pf_load("model.gguf", NULL, 0);
+if (pf_last_error(ctx)) { fprintf(stderr, "%s\n", pf_last_error(ctx)); return 1; }
+
+const char * text = "Contact John Doe at jdoe@example.com";
+pf_entity * ents = NULL;
+size_t n = 0;
+if (pf_classify(ctx, text, strlen(text), /*threshold=*/0.5f, &ents, &n) == 0) {
+    for (size_t i = 0; i < n; i++)
+        // start/end are byte offsets into `text`; label is valid until pf_free
+        printf("%-12s [%d,%d) %.2f  %.*s\n", ents[i].label, ents[i].start,
+               ents[i].end, ents[i].score, ents[i].end - ents[i].start,
+               text + ents[i].start);
+}
+pf_entities_free(ents, n);
+pf_free(ctx);
+```
+
+- `pf_classify` → `pf_entity` spans (byte offsets into the original UTF-8 text,
+  score, label); spans scoring below `threshold` are dropped. `*out` is
+  malloc'd — release with `pf_entities_free`.
+- `pf_set_window(ctx, max_forward_tokens)` — tokens per forward pass (default
+  4096). Longer inputs run as overlapping halo windows, exact because the halo
+  covers the model's full receptive field; must be `> 2048` to window.
+- Lower-level, for tests / FFI: `pf_tokenize` (token ids + `2n` start/end byte
+  offsets) and `pf_logits` (`n * n_labels` per-token classifier logits). Free
+  those flat buffers with `pf_buf_free`.
+- `pf_abi_version()` / `PF_ABI_VERSION` for ABI compatibility checks.
 
 ## Verify
 
