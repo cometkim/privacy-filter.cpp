@@ -20,6 +20,12 @@ if (PF_VULKAN)
 endif()
 if (PF_CUDA)
     set(GGML_CUDA ON)
+    # ggml's VMM pool uses the CUDA *driver* API (cuMem*), which links
+    # libcuda.so.1 — present only at runtime via the GPU driver. A GPU-less
+    # build container then can't link the final binary against the shared
+    # libggml-cuda.so. This classifier is tiny and single-GPU, so the legacy
+    # cudaMalloc pool is equivalent; disabling VMM drops the driver dependency.
+    set(GGML_CUDA_NO_VMM ON)
 endif()
 set(GGML_BUILD_TESTS    OFF)
 set(GGML_BUILD_EXAMPLES OFF)
