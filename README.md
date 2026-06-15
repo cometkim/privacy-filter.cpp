@@ -8,8 +8,12 @@ PII/NER entity spans with exact UTF-8 byte offsets. Stock upstream ggml — no
 patches; the model's YaRN `truncate=false` frequencies are computed at load
 time and fed to `ggml_rope_ext` as `freq_factors`.
 
-Uses the same GGUF files as the llama.cpp-based path (arch
-`openai-privacy-filter`, converted by the llama.cpp-fork converter).
+Pre-converted GGUFs (arch `openai-privacy-filter`):
+[`LocalAI-io/privacy-filter-multilingual-GGUF`](https://huggingface.co/LocalAI-io/privacy-filter-multilingual-GGUF)
+and [`LocalAI-io/privacy-filter-GGUF`](https://huggingface.co/LocalAI-io/privacy-filter-GGUF).
+Convert your own from a HF checkpoint with
+[`scripts/convert.py`](scripts/convert.py) — self-contained, no llama.cpp
+dependency (see [Convert](#convert)).
 
 ## Build
 
@@ -33,6 +37,23 @@ build/release/pf-cli --info model.gguf
 echo "Contact John Doe at jdoe@example.com" | \
   build/release/pf-cli --classify model.gguf 0.5       # [cpu|cuda|vulkan]
 ```
+
+## Convert
+
+Pre-converted GGUFs are linked above. To convert an `OpenAIPrivacyFilter` HF
+checkpoint yourself:
+
+```sh
+pip install -r scripts/requirements.txt   # torch + safetensors + gguf
+python scripts/convert.py --model <hf-model-dir> --outfile model-f16.gguf
+python scripts/convert.py --model <hf-model-dir> --outfile model-f32.gguf --outtype f32
+```
+
+[`scripts/convert.py`](scripts/convert.py) reads `config.json` +
+`model.safetensors` + `tokenizer.json` and emits the GGUF directly — it does
+**not** depend on llama.cpp or its converter. The nightly CI converts the model
+this way and gates the result against the HF reference logits, so the converter
+stays in parity (`.github/workflows/ci.yml`).
 
 ## C API
 
@@ -80,9 +101,11 @@ pf_free(ctx);
 
 ```sh
 ctest --preset debug -LE model            # fast suite, sanitizers, no assets
-# reference fixtures (one-time, pinned env: scripts/requirements.txt):
+# reference fixtures + GGUF (one-time, pinned env: scripts/requirements.txt):
 python scripts/hf_dump.py --model <hf-model-dir> --out tests/fixtures/hf
-PF_GGUF_DIR=<dir-with-ggufs> ctest --preset release          # full parity
+python scripts/convert.py --model <hf-model-dir> --outfile ggufs/pf-rope2-f16.gguf
+python scripts/convert.py --model <hf-model-dir> --outfile ggufs/pf-f32.gguf --outtype f32
+PF_GGUF_DIR=ggufs ctest --preset release                     # full parity (f16 + tight f32)
 PF_DEVICE=vulkan PF_GGUF_DIR=... ctest --preset release -L model   # on GPU
 ```
 

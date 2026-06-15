@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """Publish privacy-filter.cpp GGUF models + model cards to the HuggingFace Hub.
 
-The GGUFs are produced by the llama.cpp-fork converter (the ``conversion/``
-package on the ``openai-privacy-filter-arch`` branch), e.g.:
+The GGUFs are produced by ``scripts/convert.py`` (self-contained — reads
+config.json + model.safetensors + tokenizer.json, no llama.cpp dependency):
 
-    python convert_hf_to_gguf.py <hf-model-dir> --outtype f16 \\
-        --outfile <name>-f16.gguf
-
-Note: the source models' ``tokenizer_config.json`` names ``tokenizer_class:
-TokenizersBackend`` (a newer-transformers concept). With a stock ``transformers``
-set it to ``PreTrainedTokenizerFast`` first so ``AutoTokenizer`` can load the
-o200k ``tokenizer.json`` — same vocab/merges, recognized wrapper class.
+    python scripts/convert.py --model <hf-model-dir> --outfile <name>-f16.gguf
 
 This script uploads a converted GGUF plus its **version-controlled** model card
 (``model-cards/<key>.md`` -> the repo's ``README.md``) to the matching HF repo,
