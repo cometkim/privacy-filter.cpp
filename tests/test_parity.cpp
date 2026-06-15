@@ -137,36 +137,29 @@ int main() {
         std::fprintf(stderr, "PF_GGUF_DIR or PF_FIXTURES not set, skipping\n");
         return 77;
     }
-    {
-        std::vector<char> probe;
-        if (!read_file(std::string(fixtures) + "/short-en/tokens.i32", probe)) {
-            std::fprintf(stderr, "fixtures not generated (scripts/hf_dump.py), skipping\n");
-            return 77;
-        }
-    }
-
-    // The f16 GGUF is the primary gate. PF_GGUF_DIR may be set (the CI cache
-    // restores the directory) while the GGUF itself is absent — conversion
-    // lives in the llama.cpp fork and the cache is seeded separately (see
-    // .github/workflows/ci.yml). Skip cleanly rather than fail in that case.
+    // The skip above is the only legitimate one: model testing wasn't requested
+    // (the fast tier runs -LE model; this is the local "full suite, no assets"
+    // path). Once PF_GGUF_DIR/PF_FIXTURES are set the operator IS asking for
+    // parity, so every asset is a hard requirement -- a missing one fails loudly
+    // rather than silently skipping the gate. CI regenerates them all on every
+    // run (scripts/hf_dump.py + scripts/convert.py), so a missing file is a real
+    // error, not a reason to skip.
+    auto require_asset = [](const std::string & path, const char * what) {
+        if (FILE * f = std::fopen(path.c_str(), "rb")) { std::fclose(f); return; }
+        failures++;
+        std::fprintf(stderr, "FAIL: required %s missing: %s\n", what, path.c_str());
+    };
     const char * f16_name = std::getenv("PF_GGUF_NAME");
     const std::string f16 = std::string(gguf_dir) + "/" + (f16_name ? f16_name : "pf-rope2-f16.gguf");
-    if (FILE * f = std::fopen(f16.c_str(), "rb")) {
-        std::fclose(f);
-    } else {
-        std::fprintf(stderr, "%s absent, skipping\n", f16.c_str());
-        return 77;
-    }
+    const std::string f32 = std::string(gguf_dir) + "/pf-f32.gguf";
+    require_asset(std::string(fixtures) + "/short-en/tokens.i32", "fixtures (scripts/hf_dump.py)");
+    require_asset(f16, "f16 GGUF (scripts/convert.py)");
+    require_asset(f32, "f32 GGUF (scripts/convert.py --outtype f32)");
+    if (failures) return 1;
 
     // f32 GGUF: tight per-row gates vs the exact-rotation reference
-    const std::string f32 = std::string(gguf_dir) + "/pf-f32.gguf";
-    if (FILE * f = std::fopen(f32.c_str(), "rb")) {
-        std::fclose(f);
-        if (is_gpu()) run_model(f32, fixtures, "logits.f32", 0.998, 0.15);
-        else          run_model(f32, fixtures, "logits.f32", 0.99999, 1e-2);
-    } else {
-        std::fprintf(stderr, "note: %s absent, skipping f32 gates\n", f32.c_str());
-    }
+    if (is_gpu()) run_model(f32, fixtures, "logits.f32", 0.998, 0.15);
+    else          run_model(f32, fixtures, "logits.f32", 0.99999, 1e-2);
 
     // f16 GGUF: production-file gate vs the stock reference
     run_model(f16, fixtures, "logits_stock.f32", is_gpu() ? 0.998 : 0.999, is_gpu() ? 0.15 : 5e-2);
