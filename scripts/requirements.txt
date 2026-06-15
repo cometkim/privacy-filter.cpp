@@ -1,8 +1,11 @@
-# Reference environment for fixture generation (hf_dump.py) and tokenizer
-# differential tests (hf_tok_diff.py). The openai_privacy_filter model type
-# needs transformers >= 5.6.
+# Reference environment for fixture generation (hf_dump.py), tokenizer
+# differential tests (hf_tok_diff.py), and HF->GGUF conversion (convert.py).
+# The openai_privacy_filter model type needs transformers >= 5.6.
 transformers==5.9.0
 tokenizers==0.22.2
 torch>=2.11
 numpy
 safetensors
+# convert.py reads safetensors/config/tokenizer and writes GGUF; it needs only
+# torch + safetensors + gguf (no transformers).
+gguf>=0.10

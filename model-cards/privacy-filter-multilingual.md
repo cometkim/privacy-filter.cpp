@@ -130,6 +130,10 @@ confirmed by that parity. privacy-filter.cpp re-derives the YaRN `truncate=false
 load time (fed to `ggml_rope_ext` as `freq_factors`) so the same GGUF is interchangeable across
 runtimes.
 
+This GGUF was produced by [`scripts/convert.py`](https://github.com/localai-org/privacy-filter.cpp/blob/master/scripts/convert.py)
+— a self-contained HF→GGUF converter (no llama.cpp dependency). Nightly CI re-runs it and gates
+the output against the HF reference logits, so the published artifact stays in parity.
+
 ## Label space
 
 `O` plus `B-`/`I-`/`E-`/`S-` for each of 54 categories (1 + 54×4 = 217), spanning identity,
