@@ -4,7 +4,9 @@
 //   - encode: valid ids, start < end, non-decreasing starts, every byte
 //     covered (offsets are widened to UTF-8 char boundaries, so tokens may
 //     overlap on a multibyte char but never leave gaps)
-// With PF_GGUF set the full encode path runs; otherwise pretokenize only.
+// With PF_GGUF set to a loadable GGUF the full encode path runs; unset runs
+// pretokenize-only. PF_GGUF set but missing is a hard error (exit 1) — setting
+// it requests full-encode fuzzing, so the file has to be there.
 #include "tokenizer.h"
 
 #include <cstdio>
@@ -18,6 +20,17 @@ extern "C" int LLVMFuzzerInitialize(int *, char ***) {
     if (!gguf) {
         std::fprintf(stderr, "fuzz_tokenizer: PF_GGUF unset, pretokenize-only mode\n");
         return 0;
+    }
+    // PF_GGUF was set, so full-encode fuzzing was requested: the GGUF is a hard
+    // requirement. Exit cleanly (exit 1, not abort -> no core dump) when it's
+    // missing, so CI fails loudly instead of silently fuzzing pretokenize-only.
+    // CI generates it with scripts/convert.py; a missing file means misconfig.
+    // A file that exists but won't load is a real bug, so that path aborts below.
+    if (FILE * f = std::fopen(gguf, "rb")) {
+        std::fclose(f);
+    } else {
+        std::fprintf(stderr, "fuzz_tokenizer: PF_GGUF set but missing: %s\n", gguf);
+        std::exit(1);
     }
     ggml_context * gctx = nullptr;
     gguf_init_params params = { /*no_alloc =*/ true, &gctx };
