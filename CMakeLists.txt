@@ -65,6 +65,12 @@ if (PF_BUILD_TOOLS)
     # (docs/cpu-perf.md). Links ggml directly; no pf/model deps.
     add_executable(pf-gemm-bench bench/gemm_microbench.cpp)
     target_link_libraries(pf-gemm-bench PRIVATE ggml)
+
+    # Prototype: O(n*band) block-local attention == full masked attention
+    # (bit-identical), with an O(n*B) mask instead of O(n^2). Proof-of-concept
+    # for de-windowing; see docs/cpu-perf.md. Args: [block] [tokens].
+    add_executable(pf-banded-proto bench/banded_attn_proto.cpp)
+    target_link_libraries(pf-banded-proto PRIVATE ggml)
 endif()
 
 if (PF_FUZZ)
