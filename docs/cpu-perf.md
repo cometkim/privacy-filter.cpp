@@ -94,6 +94,44 @@ window-stitch — and faster where attention dominates:
 | flash (default) | 3319 | 1928 | 26918 | 20631 |
 | speedup | 1.8× | 2.4× | 2.3× | 2.3× |
 
+## Memory and the processing window (W)
+
+`PF_WINDOW` (the `pf_set_window` knob, default 4096) sets tokens per forward;
+longer inputs run as overlapping halo windows. At the default, GGML's footprint
+is **flat across document length** — the compute buffer is bounded by the window,
+not the input:
+
+| length | PyTorch VRAM (eager) | GGML Vulkan VRAM (flash, W=4096) |
+|---:|---:|---:|
+| 4 096 | 5 439 | 2 883 |
+| 8 192 | 13 637 | 2 883 |
+| 32 768 | OOM | 2 883 |
+| 131 072 | OOM | **2 883** |
+
+PyTorch (single-pass) grows O(n²) and OOMs by ~16k tokens; GGML holds ~2.9 GiB at
+131k. So the default W=4096 is a good fit for VRAM-constrained deployments.
+
+Raising W to cut the halo recompute is tempting but currently a **bad trade**: it
+OOMs by W=16384. Flash removed the O(n²) *scores*, but the sliding-window **mask
+is still a materialized `[n,n]` tensor** — the last O(n²) term.
+
+### Banded mask (prototype, `pf-banded-proto`)
+
+Grouping tokens into blocks of `B ≥ radius` and having each query block attend
+only to blocks `{i-1, i, i+1}` makes the mask **O(n·B)** (a `[3B, B, n_blocks]`
+band, constant per block) and the attention compute **O(n·band)** — while being
+**bit-identical** to full masked attention (same dot products, computed locally):
+
+```
+$ pf-banded-proto 256 8192
+n=8192 B=256 r=128 | max|d|=0.00e+00 | mask: full 256.0 MiB, band 24.0 MiB (10.7x)
+```
+
+Mask scaling (B=256): 21× smaller at 16k, 85× at 64k — i.e. the W=16384 mask drops
+1 GiB → 48 MiB, unlocking large windows. Integrating it into the model
+(`model.cpp`) needs GQA + attention-sinks handling and parity validation on both
+backends; the prototype proves the math and the memory win.
+
 ## Reproduce
 
 ```sh
