@@ -127,10 +127,25 @@ $ pf-banded-proto 256 8192
 n=8192 B=256 r=128 | max|d|=0.00e+00 | mask: full 256.0 MiB, band 24.0 MiB (10.7x)
 ```
 
-Mask scaling (B=256): 21× smaller at 16k, 85× at 64k — i.e. the W=16384 mask drops
-1 GiB → 48 MiB, unlocking large windows. Integrating it into the model
-(`model.cpp`) needs GQA + attention-sinks handling and parity validation on both
-backends; the prototype proves the math and the memory win.
+Mask scaling (B=256): 21× smaller at 16k, 85× at 64k.
+
+**Integrated** behind `PF_BANDED` (`src/model.cpp`): blocks of B=256, each query
+block flash-attends to blocks `{i-1,i,i+1}` with the F16 band mask + sinks; GQA
+broadcasts over heads; out-of-range tokens are padded and masked. Parity-exact —
+passes the f32 `cos>=0.99999` gate and window-stitch on CPU and Vulkan. Speedups
+(flash → banded, default W):
+
+| tok/s | CPU 8192 | Vulkan 8192 | Vulkan 32768 |
+|---|---:|---:|---:|
+| flash | 2068 | 42407 | 33893 |
+| banded | 2325 | **105058** | **83664** |
+| | 1.1× | **2.5×** | **2.5×** |
+
+Big on Vulkan (the flash kernel computes the full window; banded only the band),
+modest on CPU, a slight loss at very short inputs (B=256 padding overhead) -- so
+it stays opt-in for now. The remaining cap on *very* large single windows is the
+non-attention O(n) tensors (MoE activations) hitting a Vulkan single-buffer limit,
+not the mask.
 
 ## Reproduce
 
