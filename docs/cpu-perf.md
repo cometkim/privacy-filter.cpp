@@ -143,9 +143,23 @@ passes the f32 `cos>=0.99999` gate and window-stitch on CPU and Vulkan. Speedups
 
 Big on Vulkan (the flash kernel computes the full window; banded only the band),
 modest on CPU, a slight loss at very short inputs (B=256 padding overhead) -- so
-it stays opt-in for now. The remaining cap on *very* large single windows is the
-non-attention O(n) tensors (MoE activations) hitting a Vulkan single-buffer limit,
-not the mask.
+it stays opt-in for now.
+
+### Dropping the window (`PF_MOE_CHUNK`)
+
+With banded attention the only remaining O(n) cap on a large single window was the
+MoE expert matmul's activation scratch (`mul_mat_id y_sz > maxStorageBufferRange`
+on Vulkan). The MoE is per-token, so `PF_MOE_CHUNK=C` runs it in C-token chunks
+(exact, no halo). Banded + chunking lets a **131072-token document run in one
+window** instead of windowing at W=4096:
+
+| 131072 tok, Vulkan | tok/s | compute buffer |
+|---|---:|---:|
+| banded, windowed W=4096 | 80 897 | 166 MiB |
+| banded + chunk, single window | **103 539** | 2 389 MiB |
+
+~1.28× faster (no halo recompute) for more memory -- the throughput/VRAM tradeoff
+the window now exposes, capped only by total VRAM. Passes the f32 parity gate.
 
 ## Reproduce
 
