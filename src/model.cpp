@@ -205,14 +205,31 @@ bool model::forward(const int32_t * ids, int64_t n, std::vector<float> & logits,
         return t;
     };
 
+    // PF_BANDED (experimental): block-local sliding-window attention. The mask is
+    // an O(n*B) per-block band [3B,B,1,nb] instead of the O(n^2) [n,n], and
+    // attention compute drops to O(n*band). Tokens group into blocks of B>=radius;
+    // each query block attends only to blocks {i-1,i,i+1}. Bit-identical to the
+    // full masked attention (see bench/banded_attn_proto.cpp).
+    const bool use_banded = std::getenv("PF_BANDED");
+    const int  Bsz   = 256;                          // block size (>= swa_radius 128)
+    const int  nbk   = use_banded ? (int) ((n + Bsz - 1) / Bsz) : 0;
+    const int  n_pad = nbk * Bsz;
+
     // inputs (data written after alloc)
     ggml_tensor * inp_tokens = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n);
     ggml_tensor * inp_pos    = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n);
-    ggml_tensor * kq_mask    = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n, n);
     ggml_tensor * ff         = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_rot / 2);
+    ggml_tensor * kq_mask    = nullptr;   // [n,n]    -- full / flash paths
+    ggml_tensor * band_mask  = nullptr;   // [3B,B,1,nb] -- banded path
+    if (use_banded) {
+        band_mask = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 3 * Bsz, Bsz, 1, nbk);
+        ggml_set_input(band_mask);
+    } else {
+        kq_mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n, n);
+        ggml_set_input(kq_mask);
+    }
     ggml_set_input(inp_tokens);
     ggml_set_input(inp_pos);
-    ggml_set_input(kq_mask);
     ggml_set_input(ff);
 
     ggml_tensor * cur = ggml_get_rows(ctx, tok_embd, inp_tokens);  // [640, n]
@@ -246,6 +263,47 @@ bool model::forward(const int32_t * ids, int64_t n, std::vector<float> & logits,
     // Vulkan at length. PF_NOFLASH selects the explicit path (reference / debug).
     const bool use_flash = !std::getenv("PF_NOFLASH");
 
+    // Banded block-local attention (PF_BANDED): q [d,n_head,n], k/v [d,n_head_kv,n]
+    // post-rope -> [n_head*d, n]. Each query block attends to blocks {i-1,i,i+1}
+    // (3B keys) via a constant-shape per-block band mask; same dot products as the
+    // full path, computed locally. GQA broadcasts over the head dim; sinks added
+    // per block; pad tokens are masked (and trimmed) -- the sink keeps their
+    // softmax finite.
+    auto banded_attn = [&](ggml_tensor * q, ggml_tensor * k, ggml_tensor * v, ggml_tensor * sinks) {
+        const float scale = 1.0f / std::sqrt((float) n_rot);
+        if (n_pad != n) {
+            q = ggml_pad(ctx, q, 0, 0, n_pad - n, 0);
+            k = ggml_pad(ctx, k, 0, 0, n_pad - n, 0);
+            v = ggml_pad(ctx, v, 0, 0, n_pad - n, 0);
+        }
+        auto to_blocks = [&](ggml_tensor * x, int64_t hh) {              // [d,hh,n_pad]->[d,B,hh,nb]
+            x = ggml_reshape_4d(ctx, x, n_rot, hh, Bsz, nbk);            // [d,hh,B,nb]
+            return ggml_cont(ctx, ggml_permute(ctx, x, 0, 2, 1, 3));    // [d,B,hh,nb]
+        };
+        auto neigh = [&](ggml_tensor * xb, int64_t hh) {                 // [d,B,hh,nb]->[d,3B,hh,nb]
+            ggml_tensor * z = ggml_scale(ctx,
+                ggml_view_4d(ctx, xb, n_rot, Bsz, hh, 1, xb->nb[1], xb->nb[2], xb->nb[3], 0), 0.0f);
+            ggml_tensor * pad = ggml_concat(ctx, ggml_concat(ctx, z, xb, 3), z, 3);          // [d,B,hh,nb+2]
+            ggml_tensor * pr = ggml_view_4d(ctx, pad, n_rot, Bsz, hh, nbk, pad->nb[1], pad->nb[2], pad->nb[3], 0);
+            ggml_tensor * se = ggml_view_4d(ctx, pad, n_rot, Bsz, hh, nbk, pad->nb[1], pad->nb[2], pad->nb[3], 1 * pad->nb[3]);
+            ggml_tensor * nx = ggml_view_4d(ctx, pad, n_rot, Bsz, hh, nbk, pad->nb[1], pad->nb[2], pad->nb[3], 2 * pad->nb[3]);
+            return ggml_cont(ctx, ggml_concat(ctx, ggml_concat(ctx, pr, se, 1), nx, 1));     // [d,3B,hh,nb]
+        };
+        ggml_tensor * qb = to_blocks(q, n_head);                        // [d,B,14,nb]
+        ggml_tensor * kc = neigh(to_blocks(k, n_head_kv), n_head_kv);   // [d,3B,2,nb]
+        ggml_tensor * vc = neigh(to_blocks(v, n_head_kv), n_head_kv);   // [d,3B,2,nb]
+        // flash over the 3-block neighborhoods: no materialized band scores, so
+        // memory is O(n*band). mask is the F16 per-block band; sinks per block.
+        ggml_tensor * m16 = ggml_cast(ctx, band_mask, GGML_TYPE_F16);   // [3B,B,1,nb]
+        ggml_tensor * o = ggml_flash_attn_ext(ctx, qb, kc, vc, m16, scale, 0.0f, 0.0f); // [d,14,B,nb]
+        ggml_flash_attn_ext_set_prec(o, GGML_PREC_F32);
+        ggml_flash_attn_ext_add_sinks(o, sinks);
+        o = ggml_reshape_3d(ctx, o, n_rot, n_head, n_pad);             // [d,14,n_pad]
+        if (n_pad != n)
+            o = ggml_view_3d(ctx, o, n_rot, n_head, n, o->nb[1], o->nb[2], 0);
+        return ggml_cont_2d(ctx, o, n_head * n_rot, n);                // [896, n]
+    };
+
     for (int il = 0; il < h.n_layer; il++) {
         const layer_weights & l = layers[il];
         const std::string L = "l" + std::to_string(il);
@@ -266,11 +324,13 @@ bool model::forward(const int32_t * ids, int64_t n, std::vector<float> & logits,
             q = tap(rope(q), L + ".q_rope");  // [64, 14, n]
             k = tap(rope(k), L + ".k_rope");  // [64,  2, n]
 
-            ggml_tensor * qp = ggml_permute(ctx, q, 0, 2, 1, 3);                 // [64, n, 14]
-            ggml_tensor * kp = ggml_permute(ctx, k, 0, 2, 1, 3);                 // [64, n,  2]
-
             const float kq_scale = 1.0f / std::sqrt((float) n_rot);
             ggml_tensor * attn;                                                  // [896, n]
+            if (use_banded) {
+                attn = banded_attn(q, k, v, l.sinks);
+            } else {
+            ggml_tensor * qp = ggml_permute(ctx, q, 0, 2, 1, 3);                 // [64, n, 14]
+            ggml_tensor * kp = ggml_permute(ctx, k, 0, 2, 1, 3);                 // [64, n,  2]
             if (use_flash) {
                 ggml_tensor * vp = ggml_cont(ctx, ggml_permute(ctx, v, 0, 2, 1, 3)); // [64, n, 2]
                 ggml_tensor * m16 = ggml_cast(ctx, kq_mask, GGML_TYPE_F16);
@@ -287,6 +347,7 @@ bool model::forward(const int32_t * ids, int64_t n, std::vector<float> & logits,
                 ggml_tensor * kqv = ggml_mul_mat(ctx, vp, kq);                       // [64, n, 14]
                 kqv = ggml_permute(ctx, kqv, 0, 2, 1, 3);                            // [64, 14, n]
                 attn = ggml_cont_2d(ctx, kqv, n_head * n_rot, n);                    // [896, n]
+            }
             }
 
             cur = ggml_add(ctx, ggml_mul_mat(ctx, l.wo, attn), l.bo);            // [640, n]
@@ -361,9 +422,25 @@ bool model::forward(const int32_t * ids, int64_t n, std::vector<float> & logits,
         for (int64_t i = 0; i < n; i++) pos[i] = (int32_t) i;
         if (inp_pos->buffer) ggml_backend_tensor_set(inp_pos, pos.data(), 0, n * sizeof(int32_t));
 
-        std::vector<float> mask(n * n);
-        fill_swa_mask(mask.data(), n, h.swa_radius);
-        if (kq_mask->buffer) ggml_backend_tensor_set(kq_mask, mask.data(), 0, mask.size() * sizeof(float));
+        if (use_banded) {
+            // per-block band mask [3B,B,1,nb]: query (bi*B+j) sees context key
+            // (bi*B-B+p) iff within radius and a real (unpadded) token.
+            const int64_t r = h.swa_radius;
+            std::vector<float> bm((size_t) 3 * Bsz * Bsz * nbk);
+            for (int bi = 0; bi < nbk; bi++)
+                for (int j = 0; j < Bsz; j++)
+                    for (int p = 0; p < 3 * Bsz; p++) {
+                        const int64_t qpos = (int64_t) bi * Bsz + j;
+                        const int64_t kpos = (int64_t) bi * Bsz - Bsz + p;
+                        const bool vis = std::llabs(qpos - kpos) <= r && kpos >= 0 && kpos < n;
+                        bm[((size_t) bi * Bsz + j) * (3 * Bsz) + p] = vis ? 0.0f : -INFINITY;
+                    }
+            if (band_mask->buffer) ggml_backend_tensor_set(band_mask, bm.data(), 0, bm.size() * sizeof(float));
+        } else {
+            std::vector<float> mask((size_t) n * n);
+            fill_swa_mask(mask.data(), n, h.swa_radius);
+            if (kq_mask->buffer) ggml_backend_tensor_set(kq_mask, mask.data(), 0, mask.size() * sizeof(float));
+        }
         if (ff->buffer)      ggml_backend_tensor_set(ff, freq_factors.data(), 0, freq_factors.size() * sizeof(float));
     }
 
