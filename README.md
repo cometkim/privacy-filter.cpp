@@ -130,18 +130,36 @@ PF_GGUF=model.gguf ./build/fuzz/fuzz_tokenizer corpus_tok/
 ## Bench
 
 ```sh
-build/release/pf-bench model.gguf [cpu|vulkan] [iters]
+cmake --preset release-portable && cmake --build --preset release-portable -j
+build/release-portable/bin/pf-bench model.gguf [cpu|vulkan] [iters] [lengths]
 ```
 
-Ryzen 9 7900 (12 threads) / RTX 5070 Ti, f16 GGUF, forward tok/s by length
-(one untimed warm-up per length; GPU pipelines compile lazily):
+`release-portable` builds every ggml-cpu ISA variant and dispatches at runtime, so
+binaries get AVX-512 (etc.) without baking in `-march=native` (which Nix strips).
+The engine runs flash attention by default, and banded block-local sliding-window
+attention for sequences >= 2048 tokens — both parity-exact (`PF_NOFLASH` /
+`PF_BANDED=0` to disable). See [docs/cpu-perf.md](docs/cpu-perf.md).
 
-| tokens | cpu | vulkan |
-|-------:|----:|-------:|
-|    189 | 161 | 51 583 |
-|    756 | 178 | 99 756 |
-|  2 898 | 129 | 45 416 |
-| 11 403 |  68 | 20 085 |
-| 45 234 |  60 | 17 390 |
+Forward tok/s vs stock HF Transformers (transformers 5.9, eager attention), Ryzen
+9 7900 (12 threads) + RTX 5070 Ti, f16/fp16, matched token counts
+([scripts/bench_torch.py](scripts/bench_torch.py) for the reference):
 
-Weights stay in one zero-copy buffer: ~2.8 GiB RSS over baseline (f16).
+GPU — ours (Vulkan) vs HF (CUDA):
+
+| tokens |     512 |   2 048 |   8 192 |  32 768 | 131 072 |
+|-------:|--------:|--------:|--------:|--------:|--------:|
+| HF     |   5 526 |  16 427 |  14 154 |     OOM |     OOM |
+| ours   | 100 503 | 145 481 | 105 034 |  83 519 |  81 105 |
+
+CPU — ours vs HF (fp32):
+
+| tokens |   512 | 2 048 | 8 192 |
+|-------:|------:|------:|------:|
+| HF     | 2 171 |   978 |   304 |
+| ours   | 3 564 | 3 490 | 2 332 |
+
+Faster on both devices at every length (7–18× on GPU, 1.6–7.7× on CPU), the gap
+widening with length since HF's eager attention is O(n²). Memory is flat — ~2.8
+GiB VRAM / ~3 GiB RAM out to 131k tokens (the windowed compute buffer; weights are
+one zero-copy ~2.8 GiB f16 buffer) — where HF grows O(n²) and OOMs past ~16k tokens
+on a 16 GiB GPU.
