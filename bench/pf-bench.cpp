@@ -65,6 +65,11 @@ int main(int argc, char ** argv) {
     const bool exact = !lengths.empty();
     if (!exact) lengths = { 128, 512, 2048, 8192, 32768 };
 
+    // PF_WINDOW: tokens per forward pass (the pf_set_window knob). Longer inputs
+    // run as overlapping halo windows; larger W means fewer windows (less halo
+    // recompute, faster) but a bigger compute buffer (more RAM/VRAM). Default 4096.
+    const int W = std::getenv("PF_WINDOW") ? std::atoi(std::getenv("PF_WINDOW")) : 4096;
+
     const size_t rss0 = rss_kb("VmRSS:");
     const int64_t t_load0 = ggml_time_us();
     pf::model m;
@@ -88,16 +93,18 @@ int main(int argc, char ** argv) {
         for (size_t i = 0; i < toks.size(); i++) ids[i] = toks[i].id;
         std::vector<pf::ner::tok_span> spans;
         std::string err;
-        pf::ner::classify_tokens(m, ids.data(), (int) ids.size(), 4096, 0.5f, spans, err);
+        pf::ner::classify_tokens(m, ids.data(), (int) ids.size(), W, 0.5f, spans, err);
     }
     const int64_t t_first = ggml_time_us();
 
-    std::printf("device %s | load %.2fs (+%.0f MiB) | cold start %.2fs | %d iters\n\n",
+    // weights buffer: device memory (Vulkan VRAM) or the zero-copy CPU wrap.
+    const double wbuf_mib = m.weights_buf ? ggml_backend_buffer_get_size(m.weights_buf) / 1048576.0 : 0;
+    std::printf("device %s | load %.2fs (+%.0f MiB) | weights %.0f MiB | window %d | %d iters\n\n",
                 m.be.device.c_str(), (t_load1 - t_load0) / 1e6,
-                (rss1 - rss0) / 1024.0, (t_first - t_load0) / 1e6, iters);
-    std::printf("| %8s | %9s | %11s | %9s | %8s |\n",
-                "tokens", "tok ms", "forward ms", "decode ms", "tok/s");
-    std::printf("|---------:|----------:|------------:|----------:|---------:|\n");
+                (rss1 - rss0) / 1024.0, wbuf_mib, W, iters);
+    std::printf("| %8s | %11s | %8s | %9s | %9s |\n",
+                "tokens", "forward ms", "tok/s", "cmp MiB", "RSS MiB");
+    std::printf("|---------:|------------:|--------:|---------:|--------:|\n");
 
     for (const int target : lengths) {
         const std::string text = make_text(target);
@@ -117,7 +124,7 @@ int main(int argc, char ** argv) {
 
             std::vector<float> emit;
             std::string err;
-            if (!pf::ner::emit_logprobs(m, ids.data(), (int) ids.size(), 4096, emit, err)) {
+            if (!pf::ner::emit_logprobs(m, ids.data(), (int) ids.size(), W, emit, err)) {
                 std::fprintf(stderr, "forward: %s\n", err.c_str());
                 return 1;
             }
@@ -134,10 +141,14 @@ int main(int argc, char ** argv) {
             (void) spans;
         }
         const double fwd_ms = fwd_us / 1e3 / iters;
-        std::printf("| %8zu | %9.1f | %11.1f | %9.1f | %8.0f |\n",
-                    n_tok, tok_us / 1e3 / iters, fwd_ms, dec_us / 1e3 / iters,
-                    n_tok / (fwd_ms / 1e3));
+        // compute buffer: per-forward activation memory (Vulkan VRAM / CPU RAM),
+        // sized to one window -> grows with min(n_tok, W). RSS is host resident.
+        const double cmp_mib = ggml_gallocr_get_buffer_size(m.be.galloc, 0) / 1048576.0;
+        std::printf("| %8zu | %11.1f | %8.0f | %9.0f | %8.0f |\n",
+                    n_tok, fwd_ms, n_tok / (fwd_ms / 1e3), cmp_mib, rss_kb("VmRSS:") / 1024.0);
+        (void) tok_us; (void) dec_us;
     }
-    std::printf("\npeak RSS %.0f MiB\n", rss_kb("VmHWM:") / 1024.0);
+    std::printf("\npeak RSS %.0f MiB | weights %.0f MiB\n",
+                rss_kb("VmHWM:") / 1024.0, wbuf_mib);
     return 0;
 }
