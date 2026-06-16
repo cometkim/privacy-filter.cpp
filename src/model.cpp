@@ -178,8 +178,17 @@ bool model::forward(const int32_t * ids, int64_t n, std::vector<float> & logits,
     const hparams & h = file.hp;
     const int64_t n_embd = h.n_embd, n_head = h.n_head, n_head_kv = h.n_head_kv, n_rot = h.n_rot;
 
-    // ~45 nodes/layer * 8 layers + inputs/head; generous fixed bound.
-    const size_t  graph_nodes = 1024;
+    // PF_MOE_CHUNK: process the MoE FFN in token-chunks of this size. The MoE is
+    // per-token, so this is exact (no halo) and bounds the mul_mat_id activation
+    // scratch -- the remaining O(n) cap on large single windows (banded attention
+    // removed the O(n^2) one). 0 = one shot over all n.
+    const int     moe_chunk = std::getenv("PF_MOE_CHUNK") ? std::atoi(std::getenv("PF_MOE_CHUNK")) : 0;
+
+    // ~45 nodes/layer * 8 layers + inputs/head; generous fixed bound. MoE chunking
+    // multiplies the FFN node count by the number of chunks.
+    size_t        graph_nodes = 1024;
+    if (moe_chunk > 0 && n > moe_chunk)
+        graph_nodes += (size_t) ((n + moe_chunk - 1) / moe_chunk) * h.n_layer * 40;
     ggml_init_params gp = {
         ggml_tensor_overhead() * graph_nodes + ggml_graph_overhead_custom(graph_nodes, false),
         nullptr,
@@ -365,34 +374,42 @@ bool model::forward(const int32_t * ids, int64_t n, std::vector<float> & logits,
         if (!prof_nomoe) {
             const int64_t n_exp = h.n_expert, n_used = h.n_expert_used;
 
-            ggml_tensor * rl = ggml_add(ctx, ggml_mul_mat(ctx, l.router_w, cur), l.router_b);  // [128, n]
-            tap(rl, L + ".moe_logits");
+            // one expert FFN over m tokens (x: [n_embd, m]) -> [n_embd, m]
+            auto moe_ffn = [&](ggml_tensor * x, int64_t m, bool do_taps) {
+                ggml_tensor * rl = ggml_add(ctx, ggml_mul_mat(ctx, l.router_w, x), l.router_b);   // [128, m]
+                if (do_taps) tap(rl, L + ".moe_logits");
+                ggml_tensor * sel = ggml_argsort_top_k(ctx, rl, (int) n_used);                    // i32 [4, m]
+                if (do_taps) tap(sel, L + ".moe_topk");
+                ggml_tensor * w = ggml_get_rows(ctx, ggml_reshape_3d(ctx, rl, 1, n_exp, m), sel); // [1, 4, m]
+                w = ggml_soft_max(ctx, ggml_reshape_2d(ctx, w, n_used, m));
+                if (do_taps) tap(w, L + ".moe_weights");
+                w = ggml_reshape_3d(ctx, w, 1, n_used, m);
+                ggml_tensor * x3   = ggml_reshape_3d(ctx, x, n_embd, 1, m);
+                ggml_tensor * up   = ggml_add_id(ctx, ggml_mul_mat_id(ctx, l.up_exps, x3, sel), l.up_exps_b, sel);
+                ggml_tensor * gate = ggml_add_id(ctx, ggml_mul_mat_id(ctx, l.gate_exps, x3, sel), l.gate_exps_b, sel);
+                ggml_tensor * hms  = ggml_swiglu_oai(ctx, gate, up, 1.702f, 7.0f);                // [640, 4, m]
+                ggml_tensor * out  = ggml_add_id(ctx, ggml_mul_mat_id(ctx, l.down_exps, hms, sel), l.down_exps_b, sel);
+                out                = ggml_mul(ctx, out, w);
+                ggml_tensor * moe = nullptr;
+                for (int64_t e = 0; e < n_used; e++) {
+                    ggml_tensor * sl = ggml_view_2d(ctx, out, n_embd, m, out->nb[2], e * out->nb[1]);
+                    moe = moe ? ggml_add(ctx, moe, sl) : sl;
+                }
+                return ggml_cont(ctx, moe);                                                       // [n_embd, m]
+            };
 
-            ggml_tensor * sel = tap(ggml_argsort_top_k(ctx, rl, (int) n_used), L + ".moe_topk");  // i32 [4, n]
-
-            ggml_tensor * w = ggml_get_rows(ctx, ggml_reshape_3d(ctx, rl, 1, n_exp, n), sel);     // [1, 4, n]
-            w = ggml_soft_max(ctx, ggml_reshape_2d(ctx, w, n_used, n));
-            tap(w, L + ".moe_weights");
-            w = ggml_reshape_3d(ctx, w, 1, n_used, n);
-
-            ggml_tensor * x3   = ggml_reshape_3d(ctx, cur, n_embd, 1, n);
-            ggml_tensor * up   = ggml_mul_mat_id(ctx, l.up_exps, x3, sel);                        // [640, 4, n]
-            up                 = ggml_add_id(ctx, up, l.up_exps_b, sel);
-            ggml_tensor * gate = ggml_mul_mat_id(ctx, l.gate_exps, x3, sel);
-            gate               = ggml_add_id(ctx, gate, l.gate_exps_b, sel);
-
-            ggml_tensor * hms  = ggml_swiglu_oai(ctx, gate, up, 1.702f, 7.0f);                    // [640, 4, n]
-
-            ggml_tensor * out  = ggml_mul_mat_id(ctx, l.down_exps, hms, sel);                     // [640, 4, n]
-            out                = ggml_add_id(ctx, out, l.down_exps_b, sel);
-            out                = ggml_mul(ctx, out, w);
-
-            ggml_tensor * moe = nullptr;
-            for (int64_t e = 0; e < n_used; e++) {
-                ggml_tensor * slice = ggml_view_2d(ctx, out, n_embd, n, out->nb[2], e * out->nb[1]);
-                moe = moe ? ggml_add(ctx, moe, slice) : slice;
+            if (moe_chunk > 0 && n > moe_chunk) {
+                ggml_tensor * acc = nullptr;
+                for (int64_t c = 0; c < n; c += moe_chunk) {
+                    const int64_t m = std::min<int64_t>(moe_chunk, n - c);
+                    ggml_tensor * xs = ggml_cont(ctx, ggml_view_2d(ctx, cur, n_embd, m, cur->nb[1], c * cur->nb[1]));
+                    ggml_tensor * ys = moe_ffn(xs, m, false);
+                    acc = acc ? ggml_concat(ctx, acc, ys, 1) : ys;
+                }
+                cur = tap(acc, L + ".moe_out");
+            } else {
+                cur = tap(moe_ffn(cur, n, taps != nullptr), L + ".moe_out");
             }
-            cur = tap(ggml_cont(ctx, moe), L + ".moe_out");
         }
 
         cur = ggml_add(ctx, cur, resid);
