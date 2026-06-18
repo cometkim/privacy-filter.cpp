@@ -35,7 +35,7 @@ language:
   - zh
 ---
 
-# privacy-filter-multilingual — GGUF (F16)
+# privacy-filter-multilingual — GGUF (F16 + Q8_0)
 
 GGUF conversion of [`OpenMed/privacy-filter-multilingual`](https://huggingface.co/OpenMed/privacy-filter-multilingual),
 a multilingual PII **token-classification** model (a fine-tune of
@@ -109,11 +109,32 @@ upstream llama.cpp. It runs on:
 
 | File | Precision | Size | Notes |
 |---|---|---|---|
-| `privacy-filter-multilingual-f16.gguf` | F16 | ~2.7 GB | 217 `classifier.output_labels`; `pooling_type = TOKEN_CLS`. Validated artifact. |
+| `privacy-filter-multilingual-f16.gguf` | F16 | ~2.7 GB | Reference artifact. 217 `classifier.output_labels`; `pooling_type = TOKEN_CLS`. |
+| `privacy-filter-multilingual-q8.gguf` | Q8_0 (experts) | ~1.6 GB | MoE expert weights → Q8_0, the rest F16. For RAM-constrained / edge use. |
 
-F16 is the validated, shipped precision. Quantized variants are deferred until they can be
-evaluated with a **task metric (span-F1 per language) + KL-vs-F16** — perplexity is meaningless
-for a classifier, so a naively-quantized GGUF is not published here yet.
+`sha256 (q8): 968135172ba8202374b4c3bd7d353e100c8fc574035da793fa4d13ca441319b7`
+
+**Q8_0 quantization — and why it isn't free.** `q8` stores the bulk of the weights (the MoE
+expert matrices) as 8-bit integers instead of 16-bit floats — via
+[`scripts/requant_q8.py`](https://github.com/localai-org/privacy-filter.cpp/blob/master/scripts/requant_q8.py),
+with attention, embeddings and the classifier head left at F16. That roughly halves the download
+(≈2.7 GB → ≈1.6 GB) and is usually a bit faster on CPU.
+
+The catch: **reducing precision throws information away, and it is almost never a free lunch.**
+Our checks didn't find a regression — on a mixed-PII document (1,360 tokens) q8 matched f16 on
+**100%** of token labels and produced identical spans, with an average prediction shift
+(KL divergence) of just 6.9e-5. But "we didn't find a difference" is not the same as "there is
+none." Those numbers come from a single English document, and a tiny *average* shift can still
+hide a flip on the one input that matters to you — a rare name, an unusual phone or ID format, or
+a language we never tested. **Accuracy benchmarks and divergence metrics routinely look
+reassuring right up until the case that bites.** For PII detection a single missed span is a
+leak, so:
+
+- **Prefer F16** if you can afford the ~2.7 GB — it is the reference these numbers are measured
+  against, and what we trust by default.
+- **Use Q8_0** when memory or speed forces it (e.g. a 4 GB Raspberry Pi 5), treat it as a
+  deliberate tradeoff, and **validate it on your own data** first. A full span-F1-per-language
+  sweep across the 16 languages is the bar we'd want before calling q8 a true drop-in.
 
 ## Architecture & conversion
 

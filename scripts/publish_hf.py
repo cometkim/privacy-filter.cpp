@@ -20,10 +20,16 @@ Usage:
         --gguf ~/models/privacy-filter/privacy-filter-f16.gguf          # dry-run
 
     python scripts/publish_hf.py --model privacy-filter-multilingual \\
-        --gguf .../privacy-filter-multilingual-f16.gguf --upload         # push
+        --gguf .../privacy-filter-multilingual-f16.gguf --upload         # push f16
+
+    python scripts/publish_hf.py --model privacy-filter-multilingual --quant q8 \\
+        --gguf .../privacy-filter-multilingual-q8.gguf --upload          # push q8
 
     python scripts/publish_hf.py --model privacy-filter-multilingual \\
         --card-only --upload                  # sync just the card (README.md)
+
+The q8 GGUF (experts-only Q8_0, ~1.6 GB) is produced by scripts/requant_q8.py
+from the f16 and lands alongside it in the same repo; the card lists both.
 """
 from __future__ import annotations
 
@@ -37,16 +43,19 @@ CARDS_DIR = REPO_ROOT / "model-cards"
 
 HF_ORG = "LocalAI-io"
 
-# key -> (HF repo id, published GGUF filename, model-card filename under model-cards/)
-MODELS: dict[str, tuple[str, str, str]] = {
+# key -> (HF repo id, {quant: published GGUF filename}, model-card filename).
+# f16 and q8 live side by side in the same repo (the card lists both).
+MODELS: dict[str, tuple[str, dict[str, str], str]] = {
     "privacy-filter-multilingual": (
         f"{HF_ORG}/privacy-filter-multilingual-GGUF",
-        "privacy-filter-multilingual-f16.gguf",
+        {"f16": "privacy-filter-multilingual-f16.gguf",
+         "q8":  "privacy-filter-multilingual-q8.gguf"},
         "privacy-filter-multilingual.md",
     ),
     "privacy-filter": (
         f"{HF_ORG}/privacy-filter-GGUF",
-        "privacy-filter-f16.gguf",
+        {"f16": "privacy-filter-f16.gguf",
+         "q8":  "privacy-filter-q8.gguf"},
         "privacy-filter.md",
     ),
 }
@@ -67,7 +76,9 @@ def main() -> int:
     ap.add_argument("--model", required=True, choices=sorted(MODELS),
                     help="which model to publish")
     ap.add_argument("--gguf", type=Path, default=None,
-                    help="path to the converted <name>-f16.gguf (omit with --card-only)")
+                    help="path to the converted <name>-<quant>.gguf (omit with --card-only)")
+    ap.add_argument("--quant", default="f16", choices=["f16", "q8"],
+                    help="which precision this --gguf is, picks the published filename (default f16)")
     ap.add_argument("--card-only", action="store_true",
                     help="sync only the model card (README.md); leave the published GGUF untouched")
     ap.add_argument("--repo", default=None, help="override the target HF repo id")
@@ -75,7 +86,8 @@ def main() -> int:
                     help="actually push (default: dry-run, contacts nothing)")
     args = ap.parse_args()
 
-    repo, gguf_name, card_name = MODELS[args.model]
+    repo, gguf_names, card_name = MODELS[args.model]
+    gguf_name = gguf_names[args.quant]
     repo = args.repo or repo
     card = CARDS_DIR / card_name
 
@@ -94,7 +106,7 @@ def main() -> int:
         print("gguf:    (card-only — published GGUF left untouched)")
     else:
         size = args.gguf.stat().st_size
-        print(f"gguf:    {args.gguf}  ({size / 1e9:.2f} GB)  uploaded as {gguf_name}")
+        print(f"gguf:    {args.gguf}  ({size / 1e9:.2f} GB, {args.quant})  uploaded as {gguf_name}")
         print(f"sha256:  {sha256(args.gguf)}   <- pin this in the LocalAI gallery entry")
 
     if not args.upload:
@@ -116,7 +128,7 @@ def main() -> int:
         api.upload_file(
             path_or_fileobj=str(args.gguf), path_in_repo=gguf_name,
             repo_id=repo, repo_type="model",
-            commit_message=f"gguf: {gguf_name} (f16)",
+            commit_message=f"gguf: {gguf_name} ({args.quant})",
         )
     print(f"done -> https://huggingface.co/{repo}")
     return 0
