@@ -1,0 +1,5 @@
+node_modules/
+dist/
+wasm-build/
+wasm/
+*.log

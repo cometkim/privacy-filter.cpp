@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>privacy-filter.cpp — WebAssembly demo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0d1117; --fg: #e6edf3; --panel: #161b22; --border: #30363d;
+        --accent: #2f81f7; --muted: #8b949e; --green: #3fb950; --red: #f85149;
+        --amber: #d29922;
+        --radius: 8px; --pad: 1rem;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+        background: var(--bg); color: var(--fg); line-height: 1.6;
+      }
+      h1 { font-size: 1.25rem; font-weight: 600; margin: 0; }
+      h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+      .subtitle { color: var(--muted); font-size: 0.8rem; margin: 0.25rem 0 0; }
+      a { color: var(--accent); text-decoration: none; }
+      code { background: rgba(139,148,158,0.15); padding: 1px 5px; border-radius: 4px; }
+
+      /* ─── Sticky header + scan progress ────────────────────────── */
+      .header {
+        position: sticky; top: 0; z-index: 20;
+        background: var(--bg); border-bottom: 1px solid var(--border);
+      }
+      /* Use the same grid as .layout so the title aligns with the panels */
+      .header-inner,
+      .scan-progress-inner {
+        display: grid;
+        grid-template-columns: minmax(0, 1400px);
+        justify-content: center;
+        padding: 0 1.5rem;
+      }
+      .header-inner > div { padding: 0.75rem 0; }
+
+      /* ─── Sticky scan progress (in-flow, reserves its own space) ─ */
+      .scan-progress {
+        background: var(--panel); border-bottom: 1px solid var(--border);
+        font-size: 0.8rem; color: var(--muted);
+        max-height: 0; overflow: hidden; opacity: 0;
+        transition: max-height 0.2s ease, opacity 0.2s ease;
+      }
+      .scan-progress.visible { max-height: 60px; opacity: 1; }
+      .scan-progress-inner { padding-top: 0.4rem; padding-bottom: 0.4rem; }
+      .scan-progress-bar {
+        height: 3px; background: rgba(139,148,158,0.15); border-radius: 2px;
+        overflow: hidden; margin-top: 0.25rem;
+      }
+      .scan-progress-bar > div {
+        height: 100%; background: var(--accent); border-radius: 2px;
+        width: 0; transition: width 0.15s ease;
+      }
+
+      /* ─── Layout grid (single source of truth for width) ───────── */
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1400px);
+        justify-content: center;
+        gap: 1rem;
+        padding: 1rem 1.5rem 2rem;
+      }
+
+      /* ─── Shared panel base ────────────────────────────────────── */
+      .panel {
+        background: var(--panel); border: 1px solid var(--border);
+        border-radius: var(--radius); padding: var(--pad);
+      }
+      .panel-description { color: var(--muted); font-size: 0.85rem; margin: 0 0 1rem; }
+      .load-panel > summary {
+        cursor: pointer; list-style: none;
+        display: flex; align-items: center; justify-content: space-between;
+        font-weight: 600; font-size: 0.95rem;
+      }
+      .load-panel > summary::-webkit-details-marker { display: none; }
+      .load-panel > summary::before {
+        content: "▾"; font-size: 0.7rem; color: var(--muted);
+        margin-right: 0.5rem; transition: transform 0.15s ease;
+      }
+      .load-panel:not([open]) > summary::before { transform: rotate(-90deg); }
+      .load-panel-title { flex: 1; }
+      .load-panel-body { margin-top: 0.75rem; }
+      .model-status {
+        font-size: 0.7rem; font-weight: 600; padding: 2px 8px;
+        border-radius: 10px; text-transform: uppercase; letter-spacing: 0.03em;
+      }
+      .model-status.idle { background: rgba(139,148,158,0.15); color: var(--muted); }
+      .model-status.loading { background: rgba(210,153,34,0.15); color: var(--amber); }
+      .model-status.loaded { background: rgba(63,185,80,0.15); color: var(--green); }
+      .model-status.stale { background: rgba(210,153,34,0.15); color: var(--amber); }
+      .model-status.error { background: rgba(248,81,73,0.15); color: var(--red); }
+      .load-panel-actions {
+        display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+      }
+      #model-info { font-size: 0.8rem; color: var(--muted); }
+      #model-url {
+        width: 100%; padding: 0.6rem 1rem; margin-bottom: 1rem;
+        background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+        color: var(--fg); font: inherit; font-size: 0.85rem;
+        font-family: ui-monospace, monospace;
+      }
+      #model-url:focus { outline: none; border-color: var(--accent); }
+      .progress-bar-container {
+        width: 100%; height: 6px; background: rgba(139,148,158,0.15);
+        border-radius: 3px; overflow: hidden; margin-top: 0.5rem;
+      }
+      .progress-bar {
+        height: 100%; background: var(--accent); border-radius: 3px;
+        transition: width 0.3s ease; width: 0;
+      }
+      #progress { font-size: 0.8rem; color: var(--muted); margin: 0.25rem 0 0; }
+
+      /* ─── Input section ────────────────────────────────────────── */
+      textarea {
+        width: 100%; min-height: 120px; padding: var(--pad);
+        background: var(--bg); border: 1px solid var(--border);
+        border-radius: var(--radius); color: var(--fg); font: inherit; resize: vertical;
+      }
+      textarea:focus { outline: none; border-color: var(--accent); }
+      .controls { display: flex; align-items: center; gap: 1rem; margin-top: 0.75rem; flex-wrap: wrap; }
+      button {
+        padding: 0.5rem 1.25rem; background: var(--accent); color: #fff;
+        border: none; border-radius: var(--radius); font: inherit; font-weight: 600; cursor: pointer;
+      }
+      button:disabled { opacity: 0.5; cursor: default; }
+      label { color: var(--muted); font-size: 0.85rem; }
+      input[type="range"] { width: 120px; vertical-align: middle; }
+
+      /* ─── Results: 2-column grid on desktop ────────────────────── */
+      .results-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        align-items: stretch;
+      }
+      .output {
+        white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+        overflow-y: auto;
+        min-height: 300px;
+        max-height: calc(100vh - 250px);
+      }
+      mark.pii {
+        background: rgba(255,180,0,0.3); color: inherit; border-radius: 3px;
+        padding: 1px 3px; cursor: help; position: relative;
+      }
+      mark.pii[data-cat]:hover::after {
+        content: attr(data-cat); position: absolute; left: 0; top: 100%;
+        background: #21262d; border: 1px solid var(--border); padding: 2px 8px;
+        border-radius: 4px; font-size: 0.75rem; white-space: nowrap; z-index: 30;
+      }
+
+      .table-panel {
+        display: flex; flex-direction: column; overflow: hidden;
+        min-height: 300px; max-height: calc(100vh - 250px); padding: 0;
+      }
+      .table-panel-header {
+        padding: 0.6rem 1rem; border-bottom: 1px solid var(--border);
+        font-size: 0.8rem; color: var(--muted);
+        display: flex; justify-content: space-between; align-items: center;
+        flex-shrink: 0;
+      }
+      .table-scroll { overflow-y: auto; flex: 1; }
+      table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+      thead th {
+        position: sticky; top: 0; background: var(--panel);
+        text-align: left; padding: 0.4rem 0.6rem; color: var(--muted);
+        font-weight: 500; border-bottom: 1px solid var(--border); z-index: 1;
+      }
+      td { padding: 0.35rem 0.6rem; border-bottom: 1px solid rgba(48,54,61,0.5); vertical-align: top; }
+      .pill {
+        display: inline-block; padding: 1px 7px; border-radius: 10px;
+        font-size: 0.7rem; font-weight: 600; background: rgba(47,129,247,0.15); color: var(--accent);
+        white-space: nowrap;
+      }
+      .table-empty { padding: 2rem 1rem; color: var(--muted); font-size: 0.85rem; text-align: center; }
+
+      @media (max-width: 768px) {
+        .results-grid { grid-template-columns: 1fr; }
+        .output, .table-panel { max-height: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div class="header-inner">
+        <div>
+          <h1>privacy-filter.cpp — WASM SIMD</h1>
+          <p class="subtitle">
+            The original C++ engine compiled to WebAssembly — no Python, no
+            ONNX, no server.
+            <a href="https://github.com/localai-org/privacy-filter.cpp" target="_blank" rel="noopener">GitHub</a>
+          </p>
+        </div>
+      </div>
+      <div id="scan-progress" class="scan-progress">
+        <div class="scan-progress-inner">
+          <span id="scan-progress-text">Scanning…</span>
+          <div class="scan-progress-bar">
+            <div id="scan-progress-fill"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <!-- Load model -->
+      <details id="load-panel" class="panel load-panel" open>
+        <summary>
+          <span class="load-panel-title">Model</span>
+          <span id="model-status" class="model-status idle">not loaded</span>
+        </summary>
+        <div class="load-panel-body">
+          <input id="model-url" type="url"
+            placeholder="https://huggingface.co/.../model.gguf"
+            value="https://huggingface.co/LocalAI-io/privacy-filter-GGUF/resolve/main/privacy-filter-q8.gguf"
+            spellcheck="false" />
+          <div class="load-panel-actions">
+            <button id="load-btn" disabled>Initializing WASM…</button>
+            <span id="model-info"></span>
+          </div>
+          <div id="progress-container" class="progress-bar-container" style="display:none">
+            <div id="progress-bar" class="progress-bar"></div>
+          </div>
+          <p id="progress"></p>
+        </div>
+      </details>
+
+      <!-- Input -->
+      <div class="panel">
+        <textarea id="input" placeholder="Paste text to scan for PII…" disabled>Hi, my name is Alice Johnson and I live at 123 Maple Street, Springfield, IL 62701. You can reach me at alice.johnson@example.com or call (555) 123-4567. My credit card is 4532-1234-5678-9012 and my SSN is 123-45-6789.</textarea>
+        <div class="controls">
+          <button id="scan" disabled>Scan</button>
+          <label>
+            Threshold
+            <input id="thr" type="range" min="0" max="1" step="0.05" value="0.5" />
+            <span id="thr-val">0.50</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div class="results-grid">
+        <div class="panel output" id="output">
+          <span style="color:var(--muted)">Load the model first, then click Scan.</span>
+        </div>
+        <div class="panel table-panel">
+          <div class="table-panel-header">
+            <span id="stats">Entities</span>
+            <span id="entity-count"></span>
+          </div>
+          <div class="table-scroll">
+            <table id="table" style="display:none">
+              <thead><tr><th>#</th><th>Label</th><th>Text</th><th>Score</th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <div id="table-empty" class="table-empty">No entities yet</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

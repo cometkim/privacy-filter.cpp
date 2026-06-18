@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "privacy-filter-demo",
+  "compatibility_date": "2026-06-18",
+  "assets": {
+    "directory": "./dist",
+  },
+  "build": {
+    "command": "npm run build",
+    "cwd": ".",
+  },
+  "route": {
+    "pattern": "privacy-filter-demo.cometkim.dev",
+    "custom_domain": true,
+  },
+  "observability": {
+    "enabled": true,
+  },
+}
