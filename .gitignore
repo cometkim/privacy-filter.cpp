@@ -7,3 +7,6 @@ corpus_*/
 crash-*
 perf.data*
 tests/fixtures/hf/
+
+.wrangler/
+*.out*

@@ -22,10 +22,10 @@ static std::string g_json_buf;
 extern "C" {
 
 EMSCRIPTEN_KEEPALIVE
-int pf_web_load(const char *model_path) {
+int pf_web_load(const char *model_path, int n_threads) {
     if (g_ctx) { pf_free(g_ctx); g_ctx = nullptr; }
     g_error.clear();
-    g_ctx = pf_load(model_path, nullptr, 0);
+    g_ctx = pf_load(model_path, nullptr, n_threads);
     if (pf_last_error(g_ctx)) {
         g_error = pf_last_error(g_ctx);
         pf_free(g_ctx);

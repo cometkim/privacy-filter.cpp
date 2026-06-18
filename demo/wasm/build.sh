@@ -21,8 +21,13 @@ source "$EMSDK/emsdk_env.sh" 2>/dev/null || true
 mkdir -p "$BUILD_DIR"
 
 # ─── Configure ───────────────────────────────────────────────────────────────
+# Compile ggml + pf with -pthread + -msimd128 so the static libs are thread-safe
+# and use WASM SIMD128. Emscripten's CMake toolchain handles the flags via
+# CMAKE_C/CXX_FLAGS below.
 emcmake cmake -S "$ROOT_DIR" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS="-pthread -msimd128" \
+    -DCMAKE_CXX_FLAGS="-pthread -msimd128" \
     -DPF_BUILD_TOOLS=OFF \
     -DPF_BUILD_TESTS=OFF \
     -DBUILD_SHARED_LIBS=OFF \
@@ -57,6 +62,7 @@ em++ \
     "$BUILD_DIR/ggml/src/libggml-cpu.a" \
     "$BUILD_DIR/ggml/src/libggml-base.a" \
     -msimd128 \
+    -pthread \
     -O3 \
     -s WASM=1 \
     -s MODULARIZE=1 \
@@ -64,8 +70,9 @@ em++ \
     -s USE_ES6_IMPORT_META=1 \
     -s EXPORT_NAME=PfModule \
     -s ALLOW_MEMORY_GROWTH=1 \
-    -s INITIAL_MEMORY=256MB \
-    -s MAXIMUM_MEMORY=4GB \
+    -s INITIAL_MEMORY=64MB \
+    -s MAXIMUM_MEMORY=2GB \
+    -s PTHREAD_POOL_SIZE=2 \
     -s EXPORTED_RUNTIME_METHODS="['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','FS']" \
     -s EXPORT_ALL=1 \
     -o "$SCRIPT_DIR/wasm/pf.js"

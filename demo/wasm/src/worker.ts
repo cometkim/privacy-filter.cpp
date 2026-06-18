@@ -1,8 +1,7 @@
 /// <reference lib="webworker" />
-// @ts-ignore — Emscripten-generated JS module, no types
-import PfModuleFactory from "../wasm/pf.js";
-// @ts-ignore — Vite asset URL suffix, not a real module
-import wasmUrl from "../wasm/pf.wasm?url";
+// pf.js is an Emscripten-generated module with top-level await (pthreads).
+// Loaded via dynamic import from /pf.js at runtime; the file is copied to
+// dist/pf.js by vite's closeBundle hook.
 
 export interface Entity {
   entity_group: string;
@@ -35,7 +34,13 @@ let Module: any = null;
 // ─── Initialize WASM on worker boot ───────────────────────────────────────────
 async function boot() {
   try {
-    Module = await PfModuleFactory({ locateFile: () => wasmUrl });
+    // Dynamic import via Function to avoid Vite's static analysis — the
+    // Emscripten module at /pf.js has top-level await (pthreads) and lives
+    // outside the Vite graph (copied to dist/ at build time).
+    const dynImport = new Function("s", "return import(s)") as (s: string) => Promise<any>;
+    const mod = await dynImport("/pf.js");
+    const factory = mod.default;
+    Module = await factory({ locateFile: (path: string) => "/" + path });
     post({ type: "ready" });
   } catch (err) {
     post({ type: "error", message: `WASM init: ${String(err)}` });
@@ -85,8 +90,11 @@ async function loadModel(url: string) {
   const { buf, cached } = await fetchModel(url);
   Module.FS.writeFile(MODEL_PATH, buf);
 
-  const load = Module.cwrap("pf_web_load", "number", ["string"]);
-  const err = load(MODEL_PATH);
+  // Cap threads to hardware concurrency; 2 is the sweet spot for this small
+  // model. On single-core devices, fall back to 1.
+  const nThreads = Math.min(2, navigator.hardwareConcurrency || 1);
+  const load = Module.cwrap("pf_web_load", "number", ["string", "number"]);
+  const err = load(MODEL_PATH, nThreads);
   if (err) {
     const getErr = Module.cwrap("pf_web_error", "string", []);
     throw new Error(getErr());
@@ -125,9 +133,9 @@ function chunkText(text: string): Chunk[] {
     if (!buf) bufStart = segStart;
     buf += segText;
 
-    // Flush when the buffer reaches ~200 chars, or when a long pause
-    // (double newline) appears inside the segment.
-    if (buf.length >= 200 || /\n\n/.test(segText)) {
+    // Flush on paragraph breaks for visual streaming effect, or when buffer
+    // reaches 600 chars to bound per-chunk latency.
+    if (buf.length >= 600 || /\n\n/.test(segText)) {
       chunks.push({
         text: buf,
         byteOffset: enc.encode(text.slice(0, bufStart)).length,
