@@ -17,7 +17,7 @@ tags:
   - openai-privacy-filter
 ---
 
-# privacy-filter — GGUF (F16)
+# privacy-filter — GGUF (F16 + Q8_0)
 
 GGUF conversion of [`openai/privacy-filter`](https://huggingface.co/openai/privacy-filter),
 OpenAI's bidirectional PII **token-classification** model. It labels every token with a BIOES
@@ -74,13 +74,26 @@ upstream llama.cpp. It runs on:
 
 | File | Precision | Size | Notes |
 |---|---|---|---|
-| `privacy-filter-f16.gguf` | F16 | 2.82 GB | 156 tensors; 33 `classifier.output_labels`; `pooling_type = TOKEN_CLS`. |
+| `privacy-filter-f16.gguf` | F16 | 2.82 GB | Reference artifact. 156 tensors; 33 `classifier.output_labels`; `pooling_type = TOKEN_CLS`. |
+| `privacy-filter-q8.gguf` | Q8_0 (experts) | ~1.6 GB | MoE expert weights → Q8_0, the rest F16. For RAM-constrained / edge use. |
 
-`sha256: eb71312b6b9370d0fe582e576b840567bb06603c4de241c6d899205d1b04dc81`
+`sha256 (f16): eb71312b6b9370d0fe582e576b840567bb06603c4de241c6d899205d1b04dc81`
+`sha256 (q8):  80efc1803eda7c095a79741d2008c07e2e0a57b01bac8825fbeb448fd097998c`
 
-F16 is the validated, shipped precision. Quantized variants are deferred until they can be
-evaluated with a **task metric (span-F1) + KL-vs-F16** — perplexity is meaningless for a
-classifier, so a naively-quantized GGUF is not published here yet.
+**Q8_0 quantization — and why it isn't free.** `q8` stores the bulk of the weights (the MoE
+expert matrices) as 8-bit integers instead of 16-bit floats — via
+[`scripts/requant_q8.py`](https://github.com/localai-org/privacy-filter.cpp/blob/master/scripts/requant_q8.py),
+with attention, embeddings and the classifier head left at F16. That roughly halves the download
+(2.82 GB → ≈1.6 GB) and is usually a bit faster on CPU.
+
+The catch: **reducing precision throws information away, and it is almost never a free lunch.**
+On a mixed-PII document (1,360 tokens) q8 matched f16 on **99.7%** of token labels (average
+prediction shift, KL divergence, of 1.1e-3) — close, but note it did **not** match on all of
+them; a few tokens flipped. That is the point in miniature: a reassuring average still hides the
+specific cases that change, and **accuracy benchmarks tend to look fine until the one that
+bites.** For PII detection a missed span is a leak, so **prefer F16 when you can afford it** (it
+is the reference precision) and treat **Q8_0 as a deliberate size/speed tradeoff** for
+constrained hardware — ideally re-checked on your own data.
 
 ## Architecture & conversion
 
