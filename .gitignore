@@ -9,4 +9,5 @@ perf.data*
 tests/fixtures/hf/
 
 .wrangler/
+.vite/
 *.out*
