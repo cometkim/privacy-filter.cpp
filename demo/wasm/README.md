@@ -12,7 +12,7 @@ Live: **https://privacy-filter-demo.cometkim.dev**
 ```
 Browser ──fetch GGUF──▶ Cache API (IndexedDB) ──▶ Web Worker
                                                         │
-                               pf_web_load() ◀─────────┤
+                               pf_web_load()  ◀─────────┤
                                    │                    │
                           ggml WASM SIMD + pthreads     │
                                    │                    │
@@ -34,8 +34,8 @@ Browser ──fetch GGUF──▶ Cache API (IndexedDB) ──▶ Web Worker
 
 ## Prerequisites
 
-- [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html) (emsdk)
 - Node.js >= 22
+- [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html) (emsdk)
 - A Cloudflare account (for deployment; local dev needs no account)
 
 ## Build
